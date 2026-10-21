@@ -168,16 +168,16 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
             {
                 query = query.Where(x =>
                     x.Part != null &&
-                    (x.Part.IsClosed ||
-                     (x.PlantDate.HasValue && x.PlantDate.Value >= plantFrom.Value)));
+                    x.PlantDate.HasValue &&
+                    x.PlantDate.Value >= plantFrom.Value);
             }
 
             if (plantTo.HasValue)
             {
                 query = query.Where(x =>
                     x.Part != null &&
-                    (x.Part.IsClosed ||
-                     (x.PlantDate.HasValue && x.PlantDate.Value <= plantTo.Value)));
+                    x.PlantDate.HasValue &&
+                    x.PlantDate.Value <= plantTo.Value);
             }
 
             // Lọc ngày thực tế
@@ -240,6 +240,11 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 {
                     var part = _mapper.Map<PartResponse>(x);
                     part.Processes = part.Processes
+                        .Where(p =>
+                            (!plantFrom.HasValue ||
+                             (p.PlantDate.HasValue && p.PlantDate.Value >= plantFrom.Value)) &&
+                            (!plantTo.HasValue ||
+                             (p.PlantDate.HasValue && p.PlantDate.Value <= plantTo.Value)))
                         .OrderBy(p => p.Sequence)
                         .ToList();
 
