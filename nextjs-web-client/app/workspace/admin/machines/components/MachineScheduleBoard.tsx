@@ -42,10 +42,12 @@ const formatDate = (date: string) => {
   return dayjs(date).format("DD/MM");
 };
 
-const getStatusClassName = (process: MachineProcess) => {
+const getStatusClassName = (process: MachineProcess, isPastInProgress: boolean) => {
   if (process.isOverdue) {
     if (process.referenceId) {
-      return "timeline-card bg-danger-subtle text-danger-emphasis border-danger";
+      return `timeline-card bg-danger-subtle text-danger-emphasis border-danger${
+        isPastInProgress ? " opacity-50" : ""
+      }`;
     } else {
       return "timeline-card bg-danger-subtle text-danger-emphasis border-danger opacity-50";
     }
@@ -56,7 +58,9 @@ const getStatusClassName = (process: MachineProcess) => {
       return "timeline-card timeline-card-done";
 
     case ProcessStatus.InProgress:
-      return "timeline-card timeline-card-in-progress";
+      return isPastInProgress
+        ? "timeline-card timeline-card-in-progress timeline-card-in-progress-past"
+        : "timeline-card timeline-card-in-progress";
 
     case ProcessStatus.Cancelled:
       return "timeline-card timeline-card-cancelled";
@@ -78,6 +82,7 @@ export function MachineScheduleBoard({ active }: Props) {
   const [isCreatePartOpen, setIsCreatePartOpen] = useState(false);
   const [isUpdatePartOpen, setIsUpdatePartOpen] = useState(false);
   const [selectedPartId, setSelectedPartId] = useState<number | null>(null);
+  const [selectedPartReadOnly, setSelectedPartReadOnly] = useState(false);
 
   const [isCreateMaintenanceOpen, setIsCreateMaintenanceOpen] = useState(false);
   const [isUpdateMaintenanceOpen, setIsUpdateMaintenanceOpen] = useState(false);
@@ -94,11 +99,13 @@ export function MachineScheduleBoard({ active }: Props) {
 
     if (process.isClosed) {
       setSelectedPartId(process.partId);
+      setSelectedPartReadOnly(true);
       setIsUpdatePartOpen(true);
       return;
     }
 
     setSelectedPartId(process.partId);
+    setSelectedPartReadOnly(process.isCutoverCompleted);
     setIsUpdatePartOpen(true);
   };
 
@@ -250,6 +257,14 @@ export function MachineScheduleBoard({ active }: Props) {
             {processes.map((process) => {
               const isMaintenance =
                 process.type === MachineProcessType.Maintenance;
+              const isPastInProgress =
+                process.status === ProcessStatus.InProgress &&
+                dayjs(date).isBefore(dayjs().startOf("day"));
+              const processCardClass = process.isCutoverCompleted
+                ? "timeline-card-cutover-source"
+                : process.referenceId != null
+                  ? "timeline-card-cutover-continuation"
+                  : getStatusClassName(process, isPastInProgress);
 
               return (
                 <div
@@ -257,7 +272,7 @@ export function MachineScheduleBoard({ active }: Props) {
                   className={`rounded-3 border p-2 ${
                     isMaintenance
                       ? "border-danger-subtle bg-danger-subtle"
-                      : getStatusClassName(process)
+                      : processCardClass
                   }`}
                   style={{
                     minWidth: 220,
@@ -281,22 +296,32 @@ export function MachineScheduleBoard({ active }: Props) {
 
                     <div className="d-flex align-items-center gap-1 shrink-0">
                       <Tag
-                        color={isMaintenance ? "red" : undefined}
+                        color={
+                          isMaintenance
+                            ? "red"
+                            : process.isCutoverCompleted || process.referenceId != null
+                              ? "magenta"
+                              : undefined
+                        }
                         className="m-0"
                       >
-                        {getStatusText(process.status)}
+                        {process.isCutoverCompleted
+                          ? "Đã chốt ngày"
+                          : getStatusText(process.status)}
                       </Tag>
-                      {!isMaintenance && process.isClosed && (
+                      {!isMaintenance &&
+                        (process.isClosed || process.isCutoverCompleted) && (
                         <Tag color="default" className="m-0">
                           Đã đóng
                         </Tag>
-                      )}
+                        )}
 
                       <Button
                         type="text"
                         size="small"
                         icon={
-                          !isMaintenance && process.isClosed ? (
+                          !isMaintenance &&
+                          (process.isClosed || process.isCutoverCompleted) ? (
                             <EyeOutlined />
                           ) : (
                             <EditOutlined />
@@ -310,7 +335,10 @@ export function MachineScheduleBoard({ active }: Props) {
                               : "Sửa thông tin sản xuất"
                         }
                         title={
-                          !isMaintenance && process.isClosed ? "Xem" : "Sửa"
+                          !isMaintenance &&
+                          (process.isClosed || process.isCutoverCompleted)
+                            ? "Xem"
+                            : "Sửa"
                         }
                         onClick={(event) => {
                           event.stopPropagation();
@@ -362,7 +390,7 @@ export function MachineScheduleBoard({ active }: Props) {
                         <div className="d-flex justify-content-between align-items-center gap-3">
                           <div>
                             <span className="fw-medium">Số lượng: </span>
-                            {process.processedQuantity}/{process.quantity}
+                            {process.totalProcessedQuantity}/{process.quantity}
                           </div>
 
                           <div className="text-end">
@@ -542,9 +570,11 @@ export function MachineScheduleBoard({ active }: Props) {
       <UpdatePart
         id={selectedPartId}
         open={isUpdatePartOpen}
+        readOnly={selectedPartReadOnly}
         onClose={() => {
           setIsUpdatePartOpen(false);
           setSelectedPartId(null);
+          setSelectedPartReadOnly(false);
           void fetchMachineSchedule();
         }}
       />

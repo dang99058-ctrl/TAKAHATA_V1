@@ -265,6 +265,41 @@ namespace TAKAHATA.Infrastructure.Services
             }
         }
 
+        public Task<PLCResult<WriteResult>> WriteProcessStatus(Machine machine, int status)
+        {
+            _logger.LogInformation(
+                "{Method}: Writing process status {Status} to register {Address}",
+                nameof(WriteProcessStatus),
+                status,
+                machine.ProcessStatusBitAddress);
+
+            var modbusClient = new ModbusClient(
+                _settingsService.GetIpAddress(),
+                _settingsService.GetPort());
+
+            try
+            {
+                modbusClient.Connect();
+                modbusClient.WriteSingleRegister(machine.ProcessStatusBitAddress, status);
+                return Task.FromResult(
+                    PLCResult<WriteResult>.Success(new WriteResult()));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "{Method}: Failed to write process status for machine {MachineCode}",
+                    nameof(WriteProcessStatus),
+                    machine.Code);
+                return Task.FromResult(PLCResult<WriteResult>.Fail(ex));
+            }
+            finally
+            {
+                if (modbusClient.Connected)
+                    modbusClient.Disconnect();
+            }
+        }
+
         public async Task<PLCResult<WriteResult>> WriteMachineData(
             int statusBitAddress,
             int partBitAddress,
@@ -335,5 +370,4 @@ namespace TAKAHATA.Infrastructure.Services
         }
     }
 }
-
 

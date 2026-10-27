@@ -5,6 +5,7 @@ import {
   Button,
   Card,
   Col,
+  DatePicker,
   Empty,
   Form,
   Input,
@@ -29,6 +30,7 @@ import {
   getPartProcessByMachineAsync,
 } from "@/app/services/machine/MachineService";
 import { toast } from "react-toastify";
+import dayjs, { Dayjs } from "dayjs";
 import {
   Machine,
   ManufacturingProcess,
@@ -67,14 +69,10 @@ export default function WorkerPage() {
   const [loading, setLoading] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
 
-  const today = new Date().toLocaleDateString("vi-VN", {
-    weekday: "long",
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  });
-
   // New state
+  const [selectedPlantDate, setSelectedPlantDate] = useState<Dayjs>(() =>
+    dayjs().startOf("day"),
+  );
   const [machineKeyword, setMachineKeyword] = useState("");
   const [machines, setMachines] = useState<Machine[]>([]);
   const [selectedMachine, setSelectedMachine] = useState<Machine | null>(null);
@@ -113,6 +111,7 @@ export default function WorkerPage() {
         page,
         pageSize,
         machineId: selectedMachine.id,
+        plantDate: selectedPlantDate.format("YYYY-MM-DD"),
       };
 
       const result = await getPartProcessByMachineAsync(request);
@@ -138,7 +137,7 @@ export default function WorkerPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, selectedMachine]);
+  }, [page, pageSize, selectedMachine, selectedPlantDate]);
 
   useEffect(() => {
     const run = () => {
@@ -189,6 +188,7 @@ export default function WorkerPage() {
   }
 
   const selectedProcessStatus = selectedProcess?.status;
+  const isCutoverLocked = selectedProcess?.isCutoverCompleted === true;
   const isActionLoading = processingAction !== null;
 
   // Ma trận trạng thái:
@@ -196,20 +196,22 @@ export default function WorkerPage() {
   // Paused/PartiallyCompleted -> được tiếp tục.
   // InProgress -> được tạm dừng hoặc ghi nhận hoàn thành.
   const canStartProcessing =
-    selectedProcessStatus === ProcessStatus.Planned ||
-    selectedProcessStatus === ProcessStatus.Paused ||
-    selectedProcessStatus === ProcessStatus.PartiallyCompleted;
+    !isCutoverLocked &&
+    (selectedProcessStatus === ProcessStatus.Planned ||
+      selectedProcessStatus === ProcessStatus.Paused ||
+      selectedProcessStatus === ProcessStatus.PartiallyCompleted);
   //   &&
   // selectedMachine != null &&
   // selectedMachine.isAutomatic;
-  const canPauseProcessing = selectedProcessStatus === ProcessStatus.InProgress;
+  const canPauseProcessing =
+    !isCutoverLocked && selectedProcessStatus === ProcessStatus.InProgress;
   // ||
   // (selectedMachine != null &&
   //   selectedProcess != null &&
   //   !selectedMachine.isAutomatic &&
   //   selectedProcessStatus !== ProcessStatus.Completed)
   const canCompleteProcessing =
-    selectedProcessStatus === ProcessStatus.InProgress;
+    !isCutoverLocked && selectedProcessStatus === ProcessStatus.InProgress;
   // ||
   // (selectedMachine != null &&
   //   selectedProcess != null &&
@@ -314,6 +316,7 @@ export default function WorkerPage() {
 
       await startAsync(request);
       await fetchManufacturingProcess();
+      processingForm.resetFields();
     } catch (error) {
       if (error instanceof ApiError) {
         toast.error(error.getDisplayMessage());
@@ -360,7 +363,6 @@ export default function WorkerPage() {
 
       await pauseAsync(request);
       await fetchManufacturingProcess();
-      processingForm.resetFields();
     } catch (error) {
       if (error instanceof ApiError) {
         toast.error(error.getDisplayMessage());
@@ -487,7 +489,7 @@ export default function WorkerPage() {
     },
     {
       title: "Đã hoàn thành",
-      dataIndex: "processedQuantity",
+      dataIndex: "totalProcessedQuantity",
       width: 150,
       align: "center",
     },
@@ -627,7 +629,18 @@ export default function WorkerPage() {
                 <div className="d-flex align-items-center gap-2">
                   <span className="section-number">2</span>
                   <span>Danh sách chi tiết cần gia công</span>
-                  <span className="text-secondary fs-6 pl-4">{today}</span>
+                  <DatePicker
+                    allowClear={false}
+                    value={selectedPlantDate}
+                    format="DD/MM/YYYY"
+                    onChange={(date) => {
+                      if (date) {
+                        setSelectedPlantDate(date.startOf("day"));
+                        setPage(1);
+                        setSelectedProcess(null);
+                      }
+                    }}
+                  />
                 </div>
 
                 <Button
@@ -725,6 +738,13 @@ export default function WorkerPage() {
                           </Text>
                         </div>
 
+                        {isCutoverLocked && (
+                          <div className="alert alert-warning py-2 px-3 mb-3">
+                            Công đoạn ngày này đã được chốt sang ngày kế tiếp.
+                            Chỉ xem, không thể chỉnh sửa hoặc tiếp tục gia công.
+                          </div>
+                        )}
+
                         <div className="mb-3">
                           <Text type="secondary" className="d-block mb-1">
                             Chi tiết{" "}
@@ -781,6 +801,7 @@ export default function WorkerPage() {
                           disabled={
                             !canStartProcessing ||
                             isActionLoading ||
+                            isCutoverLocked ||
                             selectedProcess?.isSettingUp
                           }
                           onClick={handleBeginSettingUp}
@@ -791,7 +812,9 @@ export default function WorkerPage() {
                           size="large"
                           className="mb-2"
                           disabled={
-                            isActionLoading || !selectedProcess?.isSettingUp
+                            isActionLoading ||
+                            isCutoverLocked ||
+                            !selectedProcess?.isSettingUp
                           }
                           onClick={handleCancelSettingUp}
                         >
@@ -805,7 +828,9 @@ export default function WorkerPage() {
                         block
                         icon={<PlayCircleOutlined />}
                         loading={processingAction === "start"}
-                        disabled={!canStartProcessing || isActionLoading}
+                        disabled={
+                          !canStartProcessing || isActionLoading || isCutoverLocked
+                        }
                         onClick={handleStartProcessing}
                       >
                         {startButtonText}
@@ -820,6 +845,7 @@ export default function WorkerPage() {
                         <Form<ProcessingFormValues>
                           form={processingForm}
                           layout="vertical"
+                          disabled={isCutoverLocked}
                           initialValues={{
                             startTime: 0,
                             machineTime: 0,
@@ -944,7 +970,9 @@ export default function WorkerPage() {
                         <Button
                           icon={<PauseOutlined />}
                           loading={processingAction === "pause"}
-                          disabled={!canPauseProcessing || isActionLoading}
+                          disabled={
+                            !canPauseProcessing || isActionLoading || isCutoverLocked
+                          }
                           onClick={handlePauseProcessing}
                         >
                           Tạm dừng
@@ -955,7 +983,11 @@ export default function WorkerPage() {
                           className="complete-button"
                           icon={<CheckCircleOutlined />}
                           loading={processingAction === "complete"}
-                          disabled={!canCompleteProcessing || isActionLoading}
+                          disabled={
+                            !canCompleteProcessing ||
+                            isActionLoading ||
+                            isCutoverLocked
+                          }
                           onClick={handleCompleteProcessing}
                         >
                           Hoàn thành

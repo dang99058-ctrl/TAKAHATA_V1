@@ -1,6 +1,7 @@
 ﻿using MapsterMapper;
 using Microsoft.EntityFrameworkCore;
 using TAKAHATA.Application.Common.Interface.Repositories;
+using TAKAHATA.Application.Services;
 using TAKAHATA.Contracts.Common;
 using TAKAHATA.Contracts.Equipment;
 using TAKAHATA.Contracts.IndexAndPart;
@@ -275,15 +276,54 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 .Where(x =>
                     machineIds.Contains(x.MachineId));
 
-            if (plantFrom.HasValue)
-                partProcessQuery = partProcessQuery.Where(x => x.PlantDate >= plantFrom.Value);
-
-            if (plantTo.HasValue)
-                partProcessQuery = partProcessQuery.Where(x => x.PlantDate <= plantTo.Value);
+            if (plantFrom.HasValue || plantTo.HasValue)
+            {
+                var rangeStart = plantFrom?.ToDateTime(TimeOnly.MinValue);
+                var rangeEndExclusive = plantTo?.AddDays(1).ToDateTime(TimeOnly.MinValue);
+                partProcessQuery = partProcessQuery.Where(x =>
+                    ((plantFrom == null || x.PlantDate >= plantFrom) &&
+                     (plantTo == null || x.PlantDate <= plantTo)) ||
+                    (x.StartTime != null &&
+                     (rangeEndExclusive == null || x.StartTime < rangeEndExclusive) &&
+                     (rangeStart == null || x.EndTime == null || x.EndTime > rangeStart)));
+            }
 
             var partProcesses = await partProcessQuery
                 .Include(x => x.Part)
                     .ThenInclude(p => p.Index)
+                .ToListAsync();
+
+            var processRootIds = partProcesses
+                .Select(process => process.ReferenceId ?? process.Id)
+                .Distinct()
+                .ToList();
+            var processIds = partProcesses
+                .Select(process => process.Id)
+                .Distinct()
+                .ToList();
+            var processTotals = await _dbContext.PartProcesses
+                .Where(process =>
+                    processRootIds.Contains(process.ReferenceId ?? process.Id))
+                .GroupBy(process => process.ReferenceId ?? process.Id)
+                .Select(group => new
+                {
+                    RootId = group.Key,
+                    TotalProcessedQuantity = group.Sum(process => process.ProcessedQuantity)
+                })
+                .ToDictionaryAsync(
+                    group => group.RootId,
+                    group => group.TotalProcessedQuantity);
+            var continuationRows = await _dbContext.PartProcesses
+                .Where(process =>
+                    process.ReferenceId.HasValue &&
+                    (processRootIds.Contains(process.ReferenceId.Value) ||
+                     processIds.Contains(process.ReferenceId.Value)))
+                .Select(process => new
+                {
+                    RootId = process.ReferenceId!.Value,
+                    process.ReferenceId,
+                    process.PlantDate
+                })
                 .ToListAsync();
 
             var groupedPart = partProcesses
@@ -359,32 +399,45 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
 
                 if (partLookup.TryGetValue(machine.Id, out var partProcess))
                 {
-                    response.Processes.AddRange(partProcess.Select(process => new MachineProcessResponse
-                    {
-                        Id = process.Id,
-                        CreateAt = process.CreateAt,
-                        CreateBy = process.CreateBy,
-                        UpdateAt = process.UpdateAt,
-                        UpdateBy = process.UpdateBy,
-                        PlantDate = process.PlantDate,
-                        StartTime = process.StartTime,
-                        EndTime = process.EndTime,
-                        WorkingTime = process.WorkingTime,
-                        Status = process.Status,
-                        Note = process.Note,
-                        PartId = process.PartId,
-                        PartCode = process.Part?.Code ?? string.Empty,
-                        Quantity = process.Part?.Quantity ?? 0,
-                        Type = MachineProcessType.Manufacturing,
-                        Prioritize = process.Part?.Prioritize ?? false,
-                        IsClosed = process.Part?.IsClosed ?? false,
-                        EstimatedTime = process.EstimatedTime,
-                        PartType = process.Part?.PartType,
-                        IsOverdue = process.IsOverdue,
-                        IndexCode = process?.Part?.Index?.Code ?? string.Empty,
-                        ReferenceId = process?.ReferenceId,
-                        ProcessedQuantity = process?.ProcessedQuantity ?? 0,
-                    }));
+                    response.Processes.AddRange(partProcess.SelectMany(process =>
+                        GetScheduleDates(process, plantFrom, plantTo)
+                            .Select(scheduleDate => new MachineProcessResponse
+                            {
+                                Id = process.Id,
+                                CreateAt = process.CreateAt,
+                                CreateBy = process.CreateBy,
+                                UpdateAt = process.UpdateAt,
+                                UpdateBy = process.UpdateBy,
+                                PlantDate = scheduleDate,
+                                StartTime = process.StartTime,
+                                EndTime = process.EndTime,
+                                WorkingTime = process.WorkingTime,
+                                Status = process.Status,
+                                Note = process.Note,
+                                PartId = process.PartId,
+                                PartCode = process.Part?.Code ?? string.Empty,
+                                Quantity = process.Part?.Quantity ?? 0,
+                                Type = MachineProcessType.Manufacturing,
+                                Prioritize = process.Part?.Prioritize ?? false,
+                                IsClosed = process.Part?.IsClosed ?? false,
+                                EstimatedTime = process.EstimatedTime,
+                                PartType = process.Part?.PartType,
+                                IsOverdue = process.IsOverdue,
+                                IsCutoverCompleted =
+                                    process.EndTime.HasValue &&
+                                    process.EndTime.Value.TimeOfDay == TimeSpan.Zero &&
+                                    continuationRows.Any(continuation =>
+                                        (continuation.RootId ==
+                                             (process.ReferenceId ?? process.Id) ||
+                                         continuation.ReferenceId == process.Id) &&
+                                        continuation.PlantDate > process.PlantDate),
+                                IndexCode = process.Part?.Index?.Code ?? string.Empty,
+                                ReferenceId = process.ReferenceId,
+                                ProcessedQuantity = process.ProcessedQuantity,
+                                TotalProcessedQuantity = processTotals.GetValueOrDefault(
+                                    process.ReferenceId ?? process.Id,
+                                    process.ProcessedQuantity),
+                            })));
                 }
 
                 if (maintenanceLookup.TryGetValue(machine.Id, out var maintenances))
@@ -422,6 +475,84 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 result);
         }
 
+        private static IEnumerable<DateOnly> GetScheduleDates(
+            PartProcess process,
+            DateOnly? plantFrom,
+            DateOnly? plantTo)
+        {
+            if (plantFrom == null && plantTo == null)
+            {
+                if (process.PlantDate.HasValue)
+                    yield return process.PlantDate.Value;
+                yield break;
+            }
+
+            if (process.Status == ProcessStatus.Completed ||
+                process.Part?.IsClosed == true)
+            {
+                if (process.PlantDate.HasValue &&
+                    (!plantFrom.HasValue || process.PlantDate.Value >= plantFrom.Value) &&
+                    (!plantTo.HasValue || process.PlantDate.Value <= plantTo.Value))
+                {
+                    yield return process.PlantDate.Value;
+                }
+
+                yield break;
+            }
+
+            if (process.PlantDate.HasValue &&
+                (!plantFrom.HasValue || process.PlantDate.Value >= plantFrom.Value) &&
+                (!plantTo.HasValue || process.PlantDate.Value <= plantTo.Value))
+            {
+                yield return process.PlantDate.Value;
+            }
+
+            if (!process.StartTime.HasValue)
+            {
+                yield break;
+            }
+
+            if (!process.EndTime.HasValue)
+            {
+                if (!process.PlantDate.HasValue)
+                {
+                    var openProcessDate = DateOnly.FromDateTime(process.StartTime.Value);
+                    if ((!plantFrom.HasValue || openProcessDate >= plantFrom.Value) &&
+                        (!plantTo.HasValue || openProcessDate <= plantTo.Value))
+                    {
+                        yield return openProcessDate;
+                    }
+                }
+
+                yield break;
+            }
+
+            var processStartDate = process.EndTime?.TimeOfDay == TimeSpan.Zero
+                ? process.PlantDate
+                : process.StartTime.HasValue
+                    ? DateOnly.FromDateTime(process.StartTime.Value)
+                    : process.PlantDate;
+            if (!processStartDate.HasValue)
+                yield break;
+
+            var processEndDate = DateOnly.FromDateTime(process.EndTime!.Value);
+            if (process.EndTime?.TimeOfDay == TimeSpan.Zero)
+                processEndDate = processEndDate.AddDays(-1);
+
+            var firstDate = plantFrom.HasValue && plantFrom.Value > processStartDate.Value
+                ? plantFrom.Value
+                : processStartDate.Value;
+            var lastDate = plantTo.HasValue && plantTo.Value < processEndDate
+                ? plantTo.Value
+                : processEndDate;
+
+            for (var date = firstDate; date <= lastDate; date = date.AddDays(1))
+            {
+                if (date != process.PlantDate)
+                    yield return date;
+            }
+        }
+
         public async Task<List<MachineKPIResponse>> SearchKPIAsync(string? searchMachineKeyword, DateTime from, DateTime to)
         {
             var machineQuery = _dbContext.Machines.AsQueryable().AsNoTracking();
@@ -433,56 +564,113 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 return [];
 
             var machineIds = machines.Select(m => m.Id).ToList();
+            var reportStart = from.Date;
+            var reportEnd = to.Date.AddDays(1);
 
             var partProcesses = await _dbContext.PartProcesses
                 .IgnoreQueryFilters()
                 .Where(p =>
                     machineIds.Contains(p.MachineId) &&
                     p.StartTime != null &&
-                    p.StartTime.Value.Date >= from &&
-                    p.StartTime <= to)
+                    p.StartTime < reportEnd &&
+                    (p.EndTime == null || p.EndTime > reportStart))
                 .ToListAsync();
 
-            // Thêm điều kiện so sánh from - to vs StartTime - EndTime
             var maintenanceProcesses = await _dbContext.MachineMaintenanceProcesses
-                .Where(p => machineIds.Contains(p.MachineId) && p.StartTime != null && p.StartTime.Value.Date >= from && p.StartTime <= to)
+                .Where(p =>
+                    machineIds.Contains(p.MachineId) &&
+                    p.StartTime != null &&
+                    p.StartTime < reportEnd &&
+                    (p.EndTime == null || p.EndTime > reportStart))
                 .ToListAsync();
+
+            var dailyTimeSummaries = await _dbContext.MachineDailyTimeSummaries
+                .Where(summary =>
+                    machineIds.Contains(summary.MachineId) &&
+                    summary.ReportDate >= DateOnly.FromDateTime(reportStart) &&
+                    summary.ReportDate <= DateOnly.FromDateTime(to.Date))
+                .ToDictionaryAsync(
+                    summary => (summary.MachineId, summary.ReportDate));
 
             var result = new List<MachineKPIResponse>();
+            var now = DateTime.Now;
 
             foreach (var machine in machines)
             {
-                var maintenanceTime = maintenanceProcesses.Where(p => p.MachineId == machine.Id).Sum(p =>
+                for (var date = DateOnly.FromDateTime(reportStart);
+                    date <= DateOnly.FromDateTime(to.Date);
+                    date = date.AddDays(1))
                 {
-                    if (p.StartTime.HasValue && p.EndTime.HasValue)
-                        return (p.EndTime.Value - p.StartTime.Value).TotalHours;
+                    var dayStart = date.ToDateTime(TimeOnly.MinValue);
+                    var dayEnd = dayStart.AddDays(1);
+                    var workingTime = SumOverlapHours(
+                        partProcesses.Where(p => p.MachineId == machine.Id),
+                        dayStart,
+                        dayEnd,
+                        now,
+                        limitOpenProcessesToPlantDate: true);
+                    var maintenanceTime = SumOverlapHours(
+                        maintenanceProcesses.Where(p => p.MachineId == machine.Id),
+                        dayStart,
+                        dayEnd,
+                        now);
+                    dailyTimeSummaries.TryGetValue((machine.Id, date), out var dailySummary);
+                    if (dailySummary is not null)
+                        workingTime = dailySummary.WorkingTime;
 
-                    return 0;
-                });
-
-                var workingTime = partProcesses.Where(p => p.MachineId == machine.Id).Sum(p =>
-                {
-                    if (p.StartTime.HasValue && p.EndTime.HasValue)
-                        return (p.EndTime.Value - p.StartTime.Value).TotalHours;
-
-                    return 0;
-                });
-
-                var kpi = new MachineKPIResponse
-                {
-                    Name = machine.Name,
-                    Code = machine.Code,
-                    Brand = machine.Brand,
-                    Type = machine.Type,
-                    MachineStatus = machine.MachineStatus,
-                    MaintenanceTime = maintenanceTime,
-                    WorkingTime = workingTime,
-                };
-
-                result.Add(kpi);
+                    result.Add(new MachineKPIResponse
+                    {
+                        ReportDate = date,
+                        Name = machine.Name,
+                        Code = machine.Code,
+                        Brand = machine.Brand,
+                        Type = machine.Type,
+                        MachineStatus = machine.MachineStatus,
+                        MaintenanceTime = maintenanceTime,
+                        WorkingTime = workingTime,
+                        WaitingTime = dailySummary?.WaitingTime,
+                        SetupTime = dailySummary?.SetupTime,
+                        UtilizationRate = workingTime / 24d * 100,
+                        LostTime = Math.Max(24d - workingTime, 0),
+                    });
+                }
             }
 
-            return result;
+            return result
+                .OrderBy(kpi => kpi.ReportDate)
+                .ThenBy(kpi => kpi.Code)
+                .ToList();
+        }
+
+        private static double SumOverlapHours(
+            IEnumerable<Process> processes,
+            DateTime dayStart,
+            DateTime dayEnd,
+            DateTime now,
+            bool limitOpenProcessesToPlantDate = false)
+        {
+            return processes.Sum(process =>
+            {
+                if (!process.StartTime.HasValue)
+                    return 0;
+
+                if (limitOpenProcessesToPlantDate &&
+                    !process.EndTime.HasValue &&
+                    (process.PlantDate ??
+                     DateOnly.FromDateTime(process.StartTime.Value)) !=
+                    DateOnly.FromDateTime(dayStart))
+                {
+                    return 0;
+                }
+
+                var start = process.StartTime.Value > dayStart
+                    ? process.StartTime.Value
+                    : dayStart;
+                var processEnd = process.EndTime ?? now;
+                var end = processEnd < dayEnd ? processEnd : dayEnd;
+
+                return end > start ? (end - start).TotalHours : 0;
+            });
         }
 
         public Task<IEnumerable<Machine>> GetByIdsAsync(List<int> machineIds)
@@ -502,7 +690,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                     && pp.Part != null
                     && !pp.Part.IsClosed
                     && pp.StartTime != null
-                    && pp.StartTime.Value.Date == DateTime.Now.Date
+                    && pp.EndTime == null
                     && pp.Status == ProcessStatus.InProgress);
         }
 

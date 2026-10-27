@@ -195,9 +195,19 @@ RecurringJob.AddOrUpdate<DailyJob>(
     cronExpression: "0 1 * * *",
     options: new RecurringJobOptions
     {
-        TimeZone = GetVietnamTimeZone()
+        TimeZone = VietnamTime.TimeZone
     });
 
+RecurringJob.AddOrUpdate<DailyJob>(
+    recurringJobId: "daily-machine-time-cutover-at-midnight",
+    methodCall: job => job.SendDailyTimeCutoverCommandAsync(),
+    cronExpression: "0 0 * * *",
+    options: new RecurringJobOptions
+    {
+        TimeZone = VietnamTime.TimeZone
+    });
+
+BackgroundJob.Enqueue<DailyJob>(job => job.ExecuteAsync());
 
 app.MapOpenApi();
 app.UseSwagger();
@@ -218,17 +228,3 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
-
-static TimeZoneInfo GetVietnamTimeZone()
-{
-    // Windows thường sử dụng "SE Asia Standard Time".
-    if (OperatingSystem.IsWindows())
-    {
-        return TimeZoneInfo.FindSystemTimeZoneById(
-            "SE Asia Standard Time");
-    }
-
-    // Linux và Docker thường sử dụng IANA timezone.
-    return TimeZoneInfo.FindSystemTimeZoneById(
-        "Asia/Ho_Chi_Minh");
-}

@@ -54,6 +54,7 @@ const FORM_ID = "update-part-form";
 type Props = {
   id?: number | null;
   open: boolean;
+  readOnly?: boolean;
   onClose: () => void;
 };
 
@@ -76,6 +77,7 @@ type PlanRow = {
   processedQuantity: number | null;
   isOverdue?: boolean | null;
   referenceId?: number | null;
+  isCutoverLocked?: boolean;
 };
 
 type FormValues = {
@@ -125,7 +127,7 @@ const statusOptions = [
   { value: ProcessStatus.Paused, label: "Tạm dừng" },
 ];
 
-export default function UpdatePart({ id, open, onClose }: Props) {
+export default function UpdatePart({ id, open, readOnly = false, onClose }: Props) {
   const [form] = Form.useForm<FormValues>();
   const screens = useBreakpoint();
 
@@ -140,10 +142,13 @@ export default function UpdatePart({ id, open, onClose }: Props) {
     useState<CurrentPartInfo | null>(null);
 
   const showOverdueColumn = dataSource.some((row) => row.isOverdue);
+  const hasCutoverLockedProcesses = dataSource.some(
+    (row) => row.isCutoverLocked,
+  );
 
   const isDesktop = Boolean(screens.xl);
   const tableScrollY = isDesktop ? "calc(100dvh - 390px)" : 360;
-  const isBusy = loadingDetail || submitting || closing || isClosed;
+  const isBusy = loadingDetail || submitting || closing || isClosed || readOnly;
 
   const machineOptions = useMemo(
     () =>
@@ -218,10 +223,33 @@ export default function UpdatePart({ id, open, onClose }: Props) {
                 processedQuantity: process.processedQuantity,
                 isOverdue: process.isOverdue,
                 referenceId: process.referenceId,
+                isCutoverLocked: false,
               }))
             : [createEmptyRow()];
 
-        setDataSource(rows);
+        setDataSource(
+          rows.map((row) => {
+            const rootProcessId = row.referenceId ?? row.id;
+            const hasLaterContinuation = rows.some(
+              (candidate) =>
+                candidate.referenceId === rootProcessId &&
+                candidate.plantDate != null &&
+                row.plantDate != null &&
+                candidate.plantDate.isAfter(row.plantDate, "day"),
+            );
+
+            return {
+              ...row,
+              isCutoverLocked:
+                row.id > 0 &&
+                hasLaterContinuation &&
+                row.endTime != null &&
+                row.endTime.hour() === 0 &&
+                row.endTime.minute() === 0 &&
+                row.endTime.second() === 0,
+            };
+          }),
+        );
       } catch (error) {
         console.error("Lỗi khi lấy chi tiết Part:", error);
 
@@ -448,6 +476,16 @@ export default function UpdatePart({ id, open, onClose }: Props) {
       dataIndex: "id",
       width: 64,
       align: "center",
+      render: (value: number, record) => (
+        <Flex align="center" justify="center" gap={4}>
+          {value}
+          {record.isCutoverLocked && (
+            <Tooltip title="Đã chốt sang ngày kế tiếp, không thể chỉnh sửa">
+              <LockOutlined />
+            </Tooltip>
+          )}
+        </Flex>
+      ),
     },
     {
       title: "Máy",
@@ -466,7 +504,7 @@ export default function UpdatePart({ id, open, onClose }: Props) {
           allowClear
           placeholder="Chọn máy"
           loading={loadingMachine}
-          disabled={isBusy}
+          disabled={isBusy || record.isCutoverLocked}
           value={value}
           options={machineOptions}
           style={{ width: "100%" }}
@@ -486,7 +524,7 @@ export default function UpdatePart({ id, open, onClose }: Props) {
           placeholder="Chọn ngày"
           value={value}
           format="DD/MM/YYYY"
-          disabled={isBusy}
+          disabled={isBusy || record.isCutoverLocked}
           style={{ width: "100%" }}
           onChange={(date) => handleChange(record.key, "plantDate", date)}
         />
@@ -503,6 +541,7 @@ export default function UpdatePart({ id, open, onClose }: Props) {
           min={0}
           onChange={(v) => handleChange(record.key, "estimatedTime", v)}
           value={value}
+          disabled={isBusy || record.isCutoverLocked}
           step={0.5}
           placeholder="Nhập số giờ làm"
         />
@@ -518,7 +557,7 @@ export default function UpdatePart({ id, open, onClose }: Props) {
           value={value}
           placeholder="Nhập người thực hiện"
           maxLength={500}
-          disabled={isBusy}
+          disabled={isBusy || record.isCutoverLocked}
           onChange={(event) =>
             handleChange(record.key, "performedBy", event.target.value)
           }
@@ -539,7 +578,7 @@ export default function UpdatePart({ id, open, onClose }: Props) {
             format: "HH:mm",
           }}
           format="DD/MM/YYYY HH:mm"
-          disabled={isBusy}
+          disabled={isBusy || record.isCutoverLocked}
           style={{ width: "100%" }}
           onChange={(date) => handleChange(record.key, "startTime", date)}
         />
@@ -559,7 +598,7 @@ export default function UpdatePart({ id, open, onClose }: Props) {
             format: "HH:mm",
           }}
           format="DD/MM/YYYY HH:mm"
-          disabled={isBusy}
+          disabled={isBusy || record.isCutoverLocked}
           style={{ width: "100%" }}
           onChange={(date) => handleChange(record.key, "endTime", date)}
         />
@@ -576,6 +615,7 @@ export default function UpdatePart({ id, open, onClose }: Props) {
           min={0}
           onChange={(v) => handleChange(record.key, "workingTime", v)}
           value={value}
+          disabled={isBusy || record.isCutoverLocked}
           step={0.5}
           placeholder="Nhập số giờ"
         />
@@ -592,6 +632,7 @@ export default function UpdatePart({ id, open, onClose }: Props) {
           min={0}
           onChange={(v) => handleChange(record.key, "setupTime", v)}
           value={value}
+          disabled={isBusy || record.isCutoverLocked}
           step={0.5}
           placeholder="Nhập số giờ"
         />
@@ -608,6 +649,7 @@ export default function UpdatePart({ id, open, onClose }: Props) {
           min={0}
           onChange={(v) => handleChange(record.key, "waitingTime", v)}
           value={value}
+          disabled={isBusy || record.isCutoverLocked}
           step={0.5}
           placeholder="Nhập số giờ"
         />
@@ -624,6 +666,7 @@ export default function UpdatePart({ id, open, onClose }: Props) {
           min={0}
           onChange={(v) => handleChange(record.key, "programmingTime", v)}
           value={value}
+          disabled={isBusy || record.isCutoverLocked}
           step={0.5}
           placeholder="Nhập số giờ"
         />
@@ -640,6 +683,7 @@ export default function UpdatePart({ id, open, onClose }: Props) {
           min={0}
           onChange={(v) => handleChange(record.key, "processedQuantity", v)}
           value={value}
+          disabled={isBusy || record.isCutoverLocked}
           step={1}
           placeholder="Nhập số lượng"
         />
@@ -654,7 +698,7 @@ export default function UpdatePart({ id, open, onClose }: Props) {
         <Select
           value={value}
           options={statusOptions}
-          disabled={isBusy}
+          disabled={isBusy || record.isCutoverLocked}
           style={{ width: "100%" }}
           optionRender={(option) => getStatusTag(option.value as ProcessStatus)}
           labelRender={(option) => getStatusTag(option.value as ProcessStatus)}
@@ -674,7 +718,7 @@ export default function UpdatePart({ id, open, onClose }: Props) {
           value={value}
           placeholder="Nhập ghi chú"
           maxLength={500}
-          disabled={isBusy}
+          disabled={isBusy || record.isCutoverLocked}
           onChange={(event) =>
             handleChange(record.key, "note", event.target.value)
           }
@@ -691,7 +735,7 @@ export default function UpdatePart({ id, open, onClose }: Props) {
           value={value}
           placeholder="Nhập ghi chú"
           maxLength={500}
-          disabled={isBusy}
+          disabled={isBusy || record.isCutoverLocked}
           onChange={(event) =>
             handleChange(record.key, "workerNote", event.target.value)
           }
@@ -737,7 +781,9 @@ export default function UpdatePart({ id, open, onClose }: Props) {
             type="text"
             shape="circle"
             icon={<DeleteOutlined />}
-            disabled={dataSource.length === 1 || isBusy}
+            disabled={
+              dataSource.length === 1 || isBusy || record.isCutoverLocked
+            }
             aria-label="Xóa công đoạn"
             onClick={() => handleRemoveRow(record.key)}
           />
@@ -754,11 +800,15 @@ export default function UpdatePart({ id, open, onClose }: Props) {
       title={
         <Flex vertical gap={2}>
           <Title level={4} style={{ margin: 0 }}>
-            {isClosed ? "Part đã đóng" : "Cập nhật Part và quy trình"}
+            {isClosed
+              ? "Part đã đóng"
+              : readOnly
+                ? "Thông tin kế hoạch đã chốt"
+                : "Cập nhật Part và quy trình"}
           </Title>
           <Text type="secondary">
-            {isClosed
-              ? "Part đã đóng, chỉ xem được thông tin và lịch sử gia công"
+            {isClosed || readOnly
+              ? "Chỉ xem thông tin và lịch sử gia công"
               : "Chỉnh sửa thông tin Part và tiến độ thực hiện trên từng máy"}
           </Text>
         </Flex>
@@ -769,7 +819,7 @@ export default function UpdatePart({ id, open, onClose }: Props) {
       destroyOnHidden
       footer={
         <Flex justify="space-between" align="center" wrap gap={12}>
-          {isClosed ? (
+          {isClosed || readOnly ? (
             <Flex justify="space-between" align="center" style={{ width: "100%" }}>
               <Text type="secondary">
                 <Text strong>{dataSource.length}</Text> công đoạn trong quy trình
@@ -860,11 +910,15 @@ export default function UpdatePart({ id, open, onClose }: Props) {
         disabled={isBusy}
         onFinish={handleSubmit}
       >
-        {isClosed && (
+        {(isClosed || readOnly) && (
           <Alert
             type="warning"
             showIcon
-            message="Part đã đóng"
+            message={
+              isClosed
+                ? "Part đã đóng"
+                : "Công đoạn đã được chốt sang ngày kế tiếp và chỉ có thể xem"
+            }
             style={{ marginBottom: 16 }}
           />
         )}
@@ -1055,6 +1109,15 @@ export default function UpdatePart({ id, open, onClose }: Props) {
               styles={{ body: { padding: 0 } }}
               style={{ height: "100%", overflow: "hidden" }}
             >
+              {hasCutoverLockedProcesses && (
+                <Alert
+                  type="info"
+                  showIcon
+                  message="Một số công đoạn đã chốt"
+                  description="Công đoạn có biểu tượng khóa đã được tách sang ngày kế tiếp nên không thể chỉnh sửa hoặc xóa."
+                  style={{ margin: 12 }}
+                />
+              )}
               <Table<PlanRow>
                 rowKey="key"
                 dataSource={dataSource}

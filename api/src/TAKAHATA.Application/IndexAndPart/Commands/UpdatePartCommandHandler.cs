@@ -79,6 +79,34 @@ namespace TAKAHATA.Application.IndexAndPart.Commands
                 .Where(x => x.Id != 0)
                 .ToList();
 
+            var cutoverLockedProcesses = part.Processes
+                .Where(process => IsCutoverLocked(process, part.Processes))
+                .ToList();
+            foreach (var lockedProcess in cutoverLockedProcesses)
+            {
+                var requestedProcess = updateProcesses
+                    .FirstOrDefault(process => process.Id == lockedProcess.Id);
+
+                if (requestedProcess == null ||
+                    requestedProcess.MachineId != lockedProcess.MachineId ||
+                    requestedProcess.PlantDate != lockedProcess.PlantDate ||
+                    requestedProcess.StartTime != lockedProcess.StartTime ||
+                    requestedProcess.EndTime != lockedProcess.EndTime ||
+                    requestedProcess.WorkingTime != lockedProcess.WorkingTime ||
+                    requestedProcess.SetupTime != lockedProcess.SetupTime ||
+                    requestedProcess.WaitingTime != lockedProcess.WaitingTime ||
+                    requestedProcess.Status != lockedProcess.Status ||
+                    requestedProcess.EstimatedTime != lockedProcess.EstimatedTime ||
+                    requestedProcess.ProgrammingTime != lockedProcess.ProgrammingTime ||
+                    (requestedProcess.ProcessedQuantity ?? 0) != lockedProcess.ProcessedQuantity ||
+                    requestedProcess.PerformedBy != lockedProcess.PerformedBy ||
+                    (requestedProcess.Note ?? string.Empty) != (lockedProcess.Note ?? string.Empty) ||
+                    (requestedProcess.WorkerNote ?? string.Empty) != lockedProcess.WorkerNote)
+                {
+                    return Errors.Part.ProcessCutoverLocked;
+                }
+            }
+
             // 4. Remove deleted processes
             var requestUpdateProcessIds = updateProcesses
                 .Select(x => x.Id)
@@ -90,12 +118,18 @@ namespace TAKAHATA.Application.IndexAndPart.Commands
 
             foreach (var removeProcess in removeProcesses)
             {
+                if (cutoverLockedProcesses.Any(process => process.Id == removeProcess.Id))
+                    return Errors.Part.ProcessCutoverLocked;
+
                 part.Processes.Remove(removeProcess);
             }
 
             // 5. Update existing processes
             foreach (var process in updateProcesses)
             {
+                if (cutoverLockedProcesses.Any(existing => existing.Id == process.Id))
+                    continue;
+
                 var existingProcess = part.Processes
                     .FirstOrDefault(x => x.Id == process.Id);
 
@@ -152,7 +186,8 @@ namespace TAKAHATA.Application.IndexAndPart.Commands
                 .ToList()
                 .ForEach(x =>
                 {
-                    x.Process.Sequence = x.Sequence;
+                    if (!cutoverLockedProcesses.Any(process => process.Id == x.Process.Id))
+                        x.Process.Sequence = x.Sequence;
                 });
 
             // 7. Save update
@@ -162,6 +197,23 @@ namespace TAKAHATA.Application.IndexAndPart.Commands
                 return Errors.Part.UpdateFalse;
 
             return _mapper.Map<PartResponse>(part);
+        }
+
+        private static bool IsCutoverLocked(
+            PartProcess process,
+            IEnumerable<PartProcess> partProcesses)
+        {
+            if (!process.EndTime.HasValue ||
+                process.EndTime.Value.TimeOfDay != TimeSpan.Zero)
+            {
+                return false;
+            }
+
+            var rootProcessId = process.ReferenceId ?? process.Id;
+            return partProcesses.Any(candidate =>
+                (candidate.ReferenceId == rootProcessId ||
+                 candidate.ReferenceId == process.Id) &&
+                candidate.PlantDate > process.PlantDate);
         }
     }
 }

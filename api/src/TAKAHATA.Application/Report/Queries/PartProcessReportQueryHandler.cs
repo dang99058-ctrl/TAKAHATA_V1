@@ -28,6 +28,7 @@ namespace TAKAHATA.Application.Report.Queries
             if (partProcessKPIs != null)
                 partProcessKPIs = partProcessKPIs
                     .OrderBy(pp => pp.MachineId)
+                    .ThenBy(pp => pp.ReportDate)
                     .ThenBy(pp => pp.StartTime)
                     .ThenBy(pp => pp.IndexId)
                     .ThenBy(pp => pp.PartId)

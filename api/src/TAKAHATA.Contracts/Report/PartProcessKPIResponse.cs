@@ -13,8 +13,12 @@ namespace TAKAHATA.Contracts.Report
         public int PartId { get; set; }
         public string PartCode { get; set; } = string.Empty;
         public int PartProcessId { get; set; }
+        public int? ReferenceId { get; set; }
         public int Quantity { get; set; } = 1;
         public int ProcessedQuantity { get; set; }
+        public DateOnly? ReportDate { get; set; }
+        public bool IsMultiDay { get; set; }
+        public double? DailyMachineTotalTime { get; set; }
         public double? WorkingTime { get; set; }
         public double? SetupTime { get; set; }
         public double? WaitingTime { get; set; }

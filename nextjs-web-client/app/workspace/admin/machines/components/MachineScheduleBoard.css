@@ -35,6 +35,21 @@
   border-color: #ffd591;
 }
 
+.timeline-card-in-progress-past {
+  background: #47766b;
+  border-color: #a8c5bd;
+}
+
+.timeline-card-cutover-source {
+  background: #fce4ec;
+  border-color: #f48fb1;
+}
+
+.timeline-card-cutover-continuation {
+  background: #f3b2c2;
+  border-color: #e57391;
+}
+
 .timeline-card-done {
   background: #f6ffed;
   border-color: #b7eb8f;

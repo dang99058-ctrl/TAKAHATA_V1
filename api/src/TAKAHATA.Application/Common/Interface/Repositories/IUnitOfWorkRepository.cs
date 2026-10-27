@@ -2,6 +2,12 @@
 {
     public interface IUnitOfWorkRepository
     {
+        Task<DateOnly?> PrepareDailyCutoverAsync(
+            int machineId,
+            DateOnly previousDate);
+        Task MarkDailyCutoverCommandSentAsync(int machineId, DateOnly reportDate);
+        Task CancelDailyCutoverAsync(int machineId, DateOnly reportDate);
+        Task<DateOnly?> ClearPendingDailyCutoverAsync(int machineId);
         Task UpdateDataAsync(
                int statusBitAddress,
                int status,

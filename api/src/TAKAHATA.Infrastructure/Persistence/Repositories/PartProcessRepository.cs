@@ -1,5 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using TAKAHATA.Application.Common.Interface.Repositories;
+using TAKAHATA.Application.Services;
 using TAKAHATA.Contracts.Common;
 using TAKAHATA.Contracts.IndexAndPart;
 using TAKAHATA.Contracts.Report;
@@ -10,9 +12,13 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
 {
     public class PartProcessRepository : BaseRepository<PartProcess>, IPartProcessRepository
     {
-        public PartProcessRepository(AppDbContext dbContext) : base(dbContext)
-        {
+        private readonly ILogger<PartProcessRepository> _logger;
 
+        public PartProcessRepository(
+            AppDbContext dbContext,
+            ILogger<PartProcessRepository> logger) : base(dbContext)
+        {
+            _logger = logger;
         }
 
         public override async Task<PartProcess?> GetByIdAsync(int id)
@@ -45,7 +51,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
 
         public async Task HandleExtend()
         {
-            var today = DateOnly.FromDateTime(DateTime.Now);
+            var today = VietnamTime.Today;
 
             await using var transaction = await _dbContext.Database.BeginTransactionAsync();
 
@@ -55,153 +61,325 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                     .Where(pp =>
                         pp.Part != null &&
                         !pp.Part.IsClosed &&
-                        pp.PlantDate == today.AddDays(-1) &&
+                        pp.PlantDate < today &&
                         (pp.Status == ProcessStatus.Paused ||
                          pp.Status == ProcessStatus.PartiallyCompleted ||
                          pp.Status == ProcessStatus.InProgress ||
                          pp.Status == ProcessStatus.Planned))
                     .Include(pp => pp.Part)
+                    .OrderByDescending(pp => pp.Id)
                     .ToListAsync();
 
                 if (partProcesses.Count == 0)
-                    return;
-
-                var overdueProcesses = new List<PartProcess>();
-                var cancelledProcesses = new List<PartProcess>();
-
-                // Tạm dừng hoặc hoàn thành một phần sẽ gia hạn sang ngày hôm sau
-                foreach (var partProcess in partProcesses.Where(pp => pp.Status == ProcessStatus.Paused || pp.Status == ProcessStatus.PartiallyCompleted))
                 {
-                    var part = await _dbContext.Parts
-                        .Include(p => p.Processes)
-                        .FirstOrDefaultAsync(p => p.Id == partProcess.PartId);
+                    await transaction.CommitAsync();
+                    return;
+                }
 
+                var processedRoots = new HashSet<int>();
+                foreach (var partProcess in partProcesses)
+                {
+                    var part = partProcess.Part;
                     if (part == null)
                         continue;
 
-                    var processedQuantity = 0;
-
-                    if (partProcess.ReferenceId == null)
-                        processedQuantity = partProcess.ProcessedQuantity;
-                    else
+                    var rootProcessId = partProcess.ReferenceId ?? partProcess.Id;
+                    if (!processedRoots.Add(rootProcessId))
                     {
-                        processedQuantity = _dbContext.PartProcesses
-                            .Where(pp => pp.Id == partProcess.ReferenceId || pp.ReferenceId == partProcess.ReferenceId)
-                            .Sum(pp => pp.ProcessedQuantity);
+                        _logger.LogWarning(
+                            "Bỏ qua bản ghi gia hạn trùng trong cùng một chuỗi công đoạn. " +
+                            "ProcessId={ProcessId}, RootProcessId={RootProcessId}, PlantDate={PlantDate}",
+                            partProcess.Id,
+                            rootProcessId,
+                            partProcess.PlantDate);
+                        continue;
                     }
 
-                    if (processedQuantity < part.Quantity)
-                    {
-                        if (await _dbContext.PartProcesses.AnyAsync(pp =>
-                             pp.PlantDate == today
-                             &&
-                                ((partProcess.ReferenceId != null && pp.ReferenceId == partProcess.ReferenceId)
-                                || pp.ReferenceId == partProcess.Id)))
-                            continue;
+                    var processedQuantity = await GetProcessedQuantityByReferenceId(
+                        rootProcessId);
 
+                    if (processedQuantity >= part.Quantity)
+                    {
+                        var completedChain = await _dbContext.PartProcesses
+                            .Where(candidate =>
+                                candidate.Id == rootProcessId ||
+                                candidate.ReferenceId == rootProcessId)
+                            .ToListAsync();
+                        foreach (var completedProcess in completedChain)
+                            completedProcess.Status = ProcessStatus.Completed;
+
+                        foreach (var duplicate in await _dbContext.PartProcesses
+                            .Where(candidate =>
+                                candidate.Id != partProcess.Id &&
+                                candidate.PlantDate == today &&
+                                candidate.MachineId == partProcess.MachineId &&
+                                candidate.Part != null &&
+                                candidate.Part.Code == part.Code &&
+                                candidate.Part.IndexId == part.IndexId)
+                            .ToListAsync())
+                        {
+                            if (IsSafeToRemoveUnstartedPlan(duplicate))
+                                _dbContext.PartProcesses.Remove(duplicate);
+                        }
+                        continue;
+                    }
+
+                    if (partProcess.Status != ProcessStatus.Completed)
+                    {
+                        _logger.LogInformation(
+                            "Không tự chuyển kế hoạch chưa hoàn thành sang ngày hiện tại; " +
+                            "chờ chốt ngày thành công. ProcessId={ProcessId}, " +
+                            "RootProcessId={RootProcessId}, Status={Status}, PlantDate={PlantDate}",
+                            partProcess.Id,
+                            rootProcessId,
+                            partProcess.Status,
+                            partProcess.PlantDate);
+                        continue;
+                    }
+
+                    var equivalentToday = await _dbContext.PartProcesses
+                        .Where(candidate =>
+                            candidate.Id != partProcess.Id &&
+                            candidate.PlantDate == today &&
+                            candidate.MachineId == partProcess.MachineId &&
+                            candidate.Part != null &&
+                            candidate.Part.Code == part.Code &&
+                            candidate.Part.IndexId == part.IndexId)
+                        .ToListAsync();
+
+                    if (partProcess.Status == ProcessStatus.InProgress)
+                    {
+                        partProcess.IsOverdue = true;
+                        if (partProcess.Id != rootProcessId)
+                            partProcess.ReferenceId = rootProcessId;
+
+                        var existingContinuation = equivalentToday.FirstOrDefault(candidate =>
+                            candidate.Status == ProcessStatus.InProgress &&
+                            (candidate.Id == rootProcessId ||
+                             candidate.ReferenceId == rootProcessId));
+
+                        if (existingContinuation == null)
+                        {
+                            var activeEquivalent = equivalentToday.FirstOrDefault(candidate =>
+                                !IsSafeToRemoveUnstartedPlan(candidate));
+
+                            if (activeEquivalent != null)
+                            {
+                                if (activeEquivalent.Status == ProcessStatus.InProgress &&
+                                    (activeEquivalent.ReferenceId == null ||
+                                     activeEquivalent.ReferenceId == rootProcessId))
+                                {
+                                    activeEquivalent.ReferenceId = rootProcessId;
+                                    activeEquivalent.IsOverdue = true;
+                                    existingContinuation = activeEquivalent;
+                                }
+                                else
+                                {
+                                    _logger.LogWarning(
+                                        "Không thể tạo kế hoạch tiếp nối đang chạy vì ngày hôm nay " +
+                                        "đã có kế hoạch cùng part/sequence với dữ liệu thực tế. " +
+                                        "PreviousProcessId={PreviousProcessId}, TodayProcessId={TodayProcessId}",
+                                        partProcess.Id,
+                                        activeEquivalent.Id);
+                                    continue;
+                                }
+                            }
+                        }
+
+                        if (existingContinuation == null)
+                        {
+                            existingContinuation = new PartProcess
+                            {
+                                CreateAt = VietnamTime.Now,
+                                CreateBy = partProcess.CreateBy,
+                                MachineId = partProcess.MachineId,
+                                PlantDate = today,
+                                StartTime = null,
+                                EndTime = null,
+                                EstimatedTime = partProcess.EstimatedTime,
+                                Note = partProcess.Note,
+                                Status = ProcessStatus.InProgress,
+                                PartId = partProcess.PartId,
+                                Sequence = partProcess.Sequence,
+                                WorkingTime = 0,
+                                SetupTime = 0,
+                                WaitingTime = 0,
+                                ProgrammingTime = 0,
+                                AssemblyTime = 0,
+                                MeasurementTime = 0,
+                                ProcessedQuantity = 0,
+                                WorkerNote = string.Empty,
+                                IsOverdue = true,
+                                ReferenceId = rootProcessId,
+                                IsSettingUp = false
+                            };
+                            _dbContext.PartProcesses.Add(existingContinuation);
+                            await _dbContext.SaveChangesAsync();
+                        }
+
+                        partProcess.EndTime ??= today.ToDateTime(TimeOnly.MinValue);
+
+                        var duplicateTodayPlans = equivalentToday
+                            .Where(candidate => candidate.Id != existingContinuation.Id)
+                            .ToList();
+
+                        foreach (var duplicate in duplicateTodayPlans)
+                        {
+                            if (IsSafeToRemoveUnstartedPlan(duplicate))
+                            {
+                                _logger.LogInformation(
+                                    "Xóa kế hoạch gốc hôm nay chưa bắt đầu vì trùng mã part, index và máy " +
+                                    "với kế hoạch tiếp nối đang chạy. " +
+                                    "PreviousProcessId={PreviousProcessId}, RemovedProcessId={RemovedProcessId}, " +
+                                    "ContinuationProcessId={ContinuationProcessId}",
+                                    partProcess.Id,
+                                    duplicate.Id,
+                                    existingContinuation.Id);
+                                _dbContext.PartProcesses.Remove(duplicate);
+                            }
+                            else
+                            {
+                                _logger.LogWarning(
+                                    "Giữ kế hoạch hôm nay trùng mã part, index và máy vì đã có dữ liệu thực tế. " +
+                                    "PreviousProcessId={PreviousProcessId}, PreservedProcessId={PreservedProcessId}, " +
+                                    "ContinuationProcessId={ContinuationProcessId}",
+                                    partProcess.Id,
+                                    duplicate.Id,
+                                    existingContinuation.Id);
+                            }
+                        }
+
+                        var machine = await _dbContext.Machines
+                            .FirstOrDefaultAsync(candidate => candidate.Id == partProcess.MachineId);
+                        if (machine != null)
+                            machine.PartProcessId = existingContinuation.Id;
+                    }
+                    else if (partProcess.Status == ProcessStatus.Paused ||
+                        partProcess.Status == ProcessStatus.PartiallyCompleted)
+                    {
                         partProcess.IsOverdue = true;
 
-                        overdueProcesses.Add(new PartProcess
-                        {
-                            CreateAt = DateTime.Now,
-                            CreateBy = partProcess.CreateBy,
-                            UpdateAt = null,
-                            UpdateBy = null,
-                            MachineId = partProcess.MachineId,
-                            PlantDate = today,
-                            StartTime = null,
-                            EndTime = null,
-                            EstimatedTime = partProcess.EstimatedTime,
-                            PerformedBy = null,
-                            Note = partProcess.Note,
-                            Status = partProcess.Status,
-                            PartId = partProcess.PartId,
-                            Sequence = part.Processes.Count,
-                            WorkingTime = null,
-                            SetupTime = null,
-                            WaitingTime = null,
-                            ProgrammingTime = 0,
-                            AssemblyTime = null,
-                            MeasurementTime = null,
-                            ProcessedQuantity = 0,
-                            WorkerNote = string.Empty,
-                            IsOverdue = true,
-                            ReferenceId = partProcess.ReferenceId.HasValue ? partProcess.ReferenceId : partProcess.Id
-                        });
+                        var existingContinuation = equivalentToday.FirstOrDefault(candidate =>
+                            candidate.Id == rootProcessId ||
+                            candidate.ReferenceId == rootProcessId);
 
-                        // Tìm kế hoạch của ngày hôm nay
-                        // Trùng IndexId, PartId và MachineId => chuyển trạng thái thành Cancelled
-                        var todayProcesses = await _dbContext.PartProcesses.Where(pp =>
-                            pp.PlantDate == today &&
-                            pp.PartId == partProcess.PartId &&
-                            pp.MachineId == partProcess.MachineId &&
-                            pp.Part != null &&
-                            pp.Part.IndexId == part.IndexId).ToListAsync();
+                        var activeEquivalent = equivalentToday.FirstOrDefault(candidate =>
+                            !IsSafeToRemoveUnstartedPlan(candidate));
 
-                        if (todayProcesses != null && todayProcesses.Count != 0)
+                        if (existingContinuation == null && activeEquivalent != null)
                         {
-                            foreach (var todayProcess in todayProcesses)
+                            if (activeEquivalent.ReferenceId == null ||
+                                activeEquivalent.ReferenceId == rootProcessId)
                             {
-                                todayProcess.Status = ProcessStatus.Cancelled;
-                                cancelledProcesses.Add(todayProcess);
+                                activeEquivalent.ReferenceId = rootProcessId;
+                                activeEquivalent.IsOverdue = true;
+                                existingContinuation = activeEquivalent;
+                            }
+                            else
+                            {
+                                _logger.LogWarning(
+                                    "Không thể liên kết kế hoạch gia hạn vì kế hoạch hôm nay " +
+                                    "đã thuộc một chuỗi công đoạn khác. " +
+                                    "PreviousProcessId={PreviousProcessId}, TodayProcessId={TodayProcessId}",
+                                    partProcess.Id,
+                                    activeEquivalent.Id);
+                                continue;
+                            }
+                        }
+
+                        if (existingContinuation == null)
+                        {
+                            existingContinuation = new PartProcess
+                            {
+                                CreateAt = VietnamTime.Now,
+                                CreateBy = partProcess.CreateBy,
+                                MachineId = partProcess.MachineId,
+                                PlantDate = today,
+                                EstimatedTime = partProcess.EstimatedTime,
+                                Note = partProcess.Note,
+                                Status = partProcess.Status,
+                                PartId = partProcess.PartId,
+                                Sequence = partProcess.Sequence,
+                                ProgrammingTime = 0,
+                                ProcessedQuantity = 0,
+                                WorkerNote = string.Empty,
+                                IsOverdue = true,
+                                ReferenceId = rootProcessId
+                            };
+                            _dbContext.PartProcesses.Add(existingContinuation);
+                        }
+
+                        var duplicateTodayPlans = await _dbContext.PartProcesses
+                            .Where(candidate =>
+                                candidate.Id != existingContinuation.Id &&
+                                candidate.PlantDate == today &&
+                                candidate.MachineId == partProcess.MachineId &&
+                                candidate.Part != null &&
+                                candidate.Part.Code == part.Code &&
+                                candidate.Part.IndexId == part.IndexId)
+                            .ToListAsync();
+
+                        foreach (var duplicate in duplicateTodayPlans)
+                        {
+                            if (IsSafeToRemoveUnstartedPlan(duplicate))
+                            {
+                                _logger.LogInformation(
+                                    "Xóa kế hoạch gốc hôm nay chưa bắt đầu vì trùng mã part, index và máy " +
+                                    "với kế hoạch gia hạn. " +
+                                    "PreviousProcessId={PreviousProcessId}, RemovedProcessId={RemovedProcessId}, " +
+                                    "ContinuationProcessId={ContinuationProcessId}",
+                                    partProcess.Id,
+                                    duplicate.Id,
+                                    existingContinuation.Id);
+                                _dbContext.PartProcesses.Remove(duplicate);
+                            }
+                            else
+                            {
+                                _logger.LogWarning(
+                                    "Giữ kế hoạch hôm nay trùng mã part, index và máy vì đã có dữ liệu thực tế. " +
+                                    "PreviousProcessId={PreviousProcessId}, PreservedProcessId={PreservedProcessId}, " +
+                                    "ContinuationProcessId={ContinuationProcessId}",
+                                    partProcess.Id,
+                                    duplicate.Id,
+                                    existingContinuation.Id);
                             }
                         }
                     }
-                    else if (processedQuantity == part.Quantity)
+                    else
                     {
-                        partProcess.Status = ProcessStatus.Completed;
+                        var conflictingTodayPlan = equivalentToday.FirstOrDefault(candidate =>
+                            !IsSafeToRemoveUnstartedPlan(candidate));
 
-                        // Tìm kế hoạch của từ ngày hôm nay trở đi
-                        // Trùng IndexId, PartId và MachineId => chuyển trạng thái thành Cancelled
-                        var todayProcesses = await _dbContext.PartProcesses.Where(pp =>
-                            pp.PlantDate >= today &&
-                            pp.PartId == partProcess.PartId &&
-                            pp.MachineId == partProcess.MachineId &&
-                            pp.Part != null &&
-                            pp.Part.IndexId == part.IndexId).ToListAsync();
-
-                        if (todayProcesses != null && todayProcesses.Count != 0)
+                        if (conflictingTodayPlan != null &&
+                            (conflictingTodayPlan.ReferenceId == null ||
+                             conflictingTodayPlan.ReferenceId == rootProcessId))
                         {
-                            foreach (var todayProcess in todayProcesses)
-                            {
-                                todayProcess.Status = ProcessStatus.Cancelled;
-                                cancelledProcesses.Add(todayProcess);
-                            }
+                            conflictingTodayPlan.ReferenceId = rootProcessId;
+                            if (partProcess.Id != rootProcessId)
+                                partProcess.ReferenceId = rootProcessId;
+                            partProcess.IsOverdue = true;
+                            continue;
                         }
+
+                        if (conflictingTodayPlan != null)
+                        {
+                            _logger.LogWarning(
+                                "Không thể gộp kế hoạch gia hạn vì kế hoạch hôm nay đã có dữ liệu " +
+                                "thực tế thuộc chuỗi khác. Giữ nguyên cả hai để bảo toàn sản lượng. " +
+                                "PreviousProcessId={PreviousProcessId}, TodayProcessId={TodayProcessId}",
+                                partProcess.Id,
+                                conflictingTodayPlan.Id);
+                            continue;
+                        }
+
+                        foreach (var duplicate in equivalentToday)
+                        {
+                            _dbContext.PartProcesses.Remove(duplicate);
+                        }
+
+                        partProcess.PlantDate = today;
                     }
                 }
-
-                await _dbContext.PartProcesses.AddRangeAsync(overdueProcesses);
-
-                // Đang gia công chưa xong hoặc chưa gia công sẽ chuyển tiếp sang ngày hôm sau
-                var updateProcesses = new List<PartProcess>();
-                foreach (var partProcess in partProcesses.Where(pp => pp.Status == ProcessStatus.InProgress || pp.Status == ProcessStatus.Planned))
-                {
-                    partProcess.PlantDate = today;
-                    updateProcesses.Add(partProcess);
-
-                    // Tìm kế hoạch của ngày hôm nay
-                    // Trùng IndexId, PartId và MachineId => chuyển trạng thái thành Cancelled
-                    var todayProcesses = await _dbContext.PartProcesses.Where(pp =>
-                        pp.PlantDate == today &&
-                        pp.PartId == partProcess.PartId &&
-                        pp.MachineId == partProcess.MachineId &&
-                        pp.Part != null &&
-                        pp.Part.IndexId == partProcess.Part!.IndexId).ToListAsync();
-
-                    if (todayProcesses != null && todayProcesses.Count != 0)
-                    {
-                        foreach (var todayProcess in todayProcesses)
-                        {
-                            todayProcess.Status = ProcessStatus.Cancelled;
-                            cancelledProcesses.Add(todayProcess);
-                        }
-                    }
-                }
-                _dbContext.PartProcesses.UpdateRange(updateProcesses);
-
-                // Nếu chỉ cần chuyển trạng thái cancelled thì không cần xóa
-                _dbContext.PartProcesses.RemoveRange(cancelledProcesses);
 
                 await _dbContext.SaveChangesAsync();
                 await transaction.CommitAsync();
@@ -213,21 +391,36 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
             }
         }
 
+        private static bool IsSafeToRemoveUnstartedPlan(PartProcess process)
+        {
+            return process.Status == ProcessStatus.Planned &&
+                process.StartTime == null &&
+                process.EndTime == null &&
+                process.ProcessedQuantity == 0 &&
+                process.WorkingTime.GetValueOrDefault() == 0 &&
+                process.WaitingTime.GetValueOrDefault() == 0 &&
+                process.SetupTime.GetValueOrDefault() == 0 &&
+                process.ProgrammingTime.GetValueOrDefault() == 0 &&
+                process.AssemblyTime.GetValueOrDefault() == 0 &&
+                process.MeasurementTime.GetValueOrDefault() == 0;
+        }
+
         public async Task<SearchResponse<List<ManufacturingProcessResponse>>> SearchByMachineIdAsync(
             int machineId,
             int? page,
-            int? pageSize)
+            int? pageSize,
+            DateOnly? plantDate = null)
         {
             var currentPage = Math.Max(page ?? 1, 1);
             var currentPageSize = Math.Clamp(pageSize ?? 10, 1, 100);
 
-            var today = DateOnly.FromDateTime(DateTime.Now);
+            var selectedDate = plantDate ?? VietnamTime.Today;
 
             var partProcesses = _dbContext.PartProcesses
                 .AsNoTracking()
                 .Where(x =>
                     x.MachineId == machineId &&
-                    x.PlantDate == today &&
+                    x.PlantDate == selectedDate &&
                     x.Part != null &&
                     !x.Part.IsClosed);
 
@@ -254,7 +447,12 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                         : 0,
 
                     ProcessedQuantity = x.ProcessedQuantity,
-                    TotalProcessedQuantity = x.ReferenceId == null ? x.ProcessedQuantity : _dbContext.PartProcesses.Where(pp => pp.Id == x.ReferenceId || pp.ReferenceId == x.ReferenceId).Sum(pp => pp.ProcessedQuantity),
+                    TotalProcessedQuantity = _dbContext.PartProcesses
+                        .Where(pp =>
+                            pp.Id == (x.ReferenceId ?? x.Id) ||
+                            pp.ReferenceId == (x.ReferenceId ?? x.Id))
+                        .Sum(pp => pp.ProcessedQuantity),
+                    ReferenceId = x.ReferenceId,
 
                     IndexId = x.Part != null
                         ? x.Part.IndexId
@@ -283,9 +481,74 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 })
                 .ToListAsync();
 
+            var processRootIds = data
+                .Select(process => process.ReferenceId ?? process.Id)
+                .Distinct()
+                .ToList();
+            var processIds = data
+                .Select(process => process.Id)
+                .Distinct()
+                .ToList();
+            var continuationRows = await _dbContext.PartProcesses
+                .Where(process =>
+                    process.ReferenceId.HasValue &&
+                    (processRootIds.Contains(process.ReferenceId.Value) ||
+                     processIds.Contains(process.ReferenceId.Value)))
+                .Select(process => new
+                {
+                    RootId = process.ReferenceId!.Value,
+                    process.ReferenceId,
+                    process.PlantDate
+                })
+                .ToListAsync();
+
+            foreach (var process in data)
+            {
+                var rootProcessId = process.ReferenceId ?? process.Id;
+                process.IsCutoverCompleted =
+                    process.EndTime?.TimeOfDay == TimeSpan.Zero &&
+                    continuationRows.Any(continuation =>
+                        (continuation.RootId == rootProcessId ||
+                         continuation.ReferenceId == process.Id) &&
+                        continuation.PlantDate > selectedDate);
+            }
+
+            var cutoverProcessIds = data
+                .Where(process =>
+                    process.IsCutoverCompleted ||
+                    process.ReferenceId.HasValue)
+                .Select(process => process.Id)
+                .ToList();
+            if (cutoverProcessIds.Count > 0)
+            {
+                var dailyProcessSummaries = await _dbContext.PartProcessDailyTimeSummaries
+                    .Where(summary =>
+                        summary.MachineId == machineId &&
+                        cutoverProcessIds.Contains(summary.PartProcessId) &&
+                        summary.ReportDate == selectedDate)
+                    .ToDictionaryAsync(summary =>
+                        summary.PartProcessId);
+
+                foreach (var process in data.Where(item =>
+                    item.IsCutoverCompleted || item.ReferenceId.HasValue))
+                {
+                    if (!dailyProcessSummaries.TryGetValue(process.Id, out var summary))
+                        continue;
+
+                    process.WorkingTime = summary.WorkingTime;
+                    process.WaitingTime = summary.WaitingTime;
+                    process.SetupTime = summary.SetupTime;
+                    process.TotalTime =
+                        summary.WorkingTime +
+                        summary.WaitingTime +
+                        summary.SetupTime +
+                        (process.ProgrammingTime ?? 0);
+                }
+            }
+
             var maintenanceProcesses = await _dbContext.MachineMaintenanceProcesses
                 .AsNoTracking()
-                .Where(x => x.MachineId == machineId && x.PlantDate == today)
+                .Where(x => x.MachineId == machineId && x.PlantDate == selectedDate)
                 .ToListAsync();
 
             foreach (var x in maintenanceProcesses)
@@ -375,8 +638,19 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                     return [];
             }
 
+            var reportStart = from.Date;
+            var reportEnd = to.Date.AddDays(1);
             query = query
-                .Where(p => p.StartTime != null && p.StartTime.Value.Date >= from.Date && p.StartTime.Value.Date <= to.Date);
+                .Where(p =>
+                    (p.StartTime != null &&
+                     p.StartTime < reportEnd &&
+                     (p.EndTime == null || p.EndTime > reportStart)) ||
+                    (p.ReferenceId != null &&
+                     p.PlantDate >= DateOnly.FromDateTime(reportStart) &&
+                     p.PlantDate <= DateOnly.FromDateTime(to.Date)) ||
+                    (p.EndTime != null &&
+                     p.PlantDate >= DateOnly.FromDateTime(reportStart) &&
+                     p.PlantDate <= DateOnly.FromDateTime(to.Date)));
 
             var result = query.Join(
                 _dbContext.Parts
@@ -394,6 +668,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
 
                     // PartProcess
                     PartProcessId = pp.Id,
+                    ReferenceId = pp.ReferenceId,
                     PlantDate = pp.PlantDate,
                     StartTime = pp.StartTime,
                     EndTime = pp.EndTime,
@@ -452,7 +727,252 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 }
             }
 
-            return partProcesses;
+            if (partProcesses.Count == 0)
+                return [];
+
+            var fromDate = DateOnly.FromDateTime(reportStart);
+            var toDate = DateOnly.FromDateTime(to.Date);
+            var partProcessIds = partProcesses
+                .Select(process => process.PartProcessId)
+                .Distinct()
+                .ToList();
+            var processSummaryIds = partProcessIds
+                .Distinct()
+                .ToList();
+            var continuationRootIds = await _dbContext.PartProcesses
+                .Where(process =>
+                    process.ReferenceId.HasValue &&
+                    partProcessIds.Contains(process.ReferenceId.Value))
+                .Select(process => process.ReferenceId!.Value)
+                .Distinct()
+                .ToHashSetAsync();
+            var reportMachineIds = partProcesses
+                .Select(process => process.MachineId)
+                .Distinct()
+                .ToList();
+
+            var dailyProcessSummaries = await _dbContext.PartProcessDailyTimeSummaries
+                .Where(summary =>
+                    processSummaryIds.Contains(summary.PartProcessId) &&
+                    reportMachineIds.Contains(summary.MachineId) &&
+                    summary.ReportDate >= fromDate &&
+                    summary.ReportDate <= toDate)
+                .ToDictionaryAsync(
+                    summary => (summary.MachineId, summary.PartProcessId, summary.ReportDate));
+
+            var dailyMachineSummaries = await _dbContext.MachineDailyTimeSummaries
+                .Where(summary =>
+                    reportMachineIds.Contains(summary.MachineId) &&
+                    summary.ReportDate >= fromDate &&
+                    summary.ReportDate <= toDate)
+                .ToDictionaryAsync(
+                    summary => (summary.MachineId, summary.ReportDate));
+
+            var allProcessesInReportRange = await _dbContext.PartProcesses
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(process =>
+                    reportMachineIds.Contains(process.MachineId) &&
+                    ((process.StartTime != null &&
+                      process.StartTime < reportEnd &&
+                      (process.EndTime == null || process.EndTime > reportStart)) ||
+                     (process.ReferenceId != null &&
+                      process.PlantDate >= fromDate &&
+                      process.PlantDate <= toDate)))
+                .Select(process => new
+                {
+                    process.MachineId,
+                    process.StartTime,
+                    process.EndTime,
+                    process.PlantDate
+                })
+                .ToListAsync();
+
+            var activeProcessCounts = new Dictionary<(int MachineId, DateOnly Date), int>();
+            foreach (var process in allProcessesInReportRange)
+            {
+                var processStartDate = process.PlantDate ??
+                    (process.StartTime.HasValue
+                        ? DateOnly.FromDateTime(process.StartTime.Value)
+                        : null);
+                if (!processStartDate.HasValue)
+                    continue;
+
+                var processEndDate = process.PlantDate ??
+                    (process.EndTime.HasValue
+                        ? GetLastActiveDate(process.EndTime.Value)
+                        : processStartDate.Value);
+                var firstDate = processStartDate.Value > fromDate
+                    ? processStartDate.Value
+                    : fromDate;
+                var lastDate = processEndDate < toDate ? processEndDate : toDate;
+
+                for (var date = firstDate; date <= lastDate; date = date.AddDays(1))
+                {
+                    var key = (process.MachineId, date);
+                    activeProcessCounts[key] = activeProcessCounts.GetValueOrDefault(key) + 1;
+                }
+            }
+
+            var dailyRows = new List<PartProcessKPIResponse>();
+            foreach (var process in partProcesses)
+            {
+                var hasContinuation = continuationRootIds.Contains(
+                    process.PartProcessId);
+                var isContinuationChain =
+                    process.ReferenceId.HasValue || hasContinuation;
+                var processStartDate = process.PlantDate ??
+                    (process.StartTime.HasValue
+                        ? DateOnly.FromDateTime(process.StartTime.Value)
+                        : null);
+                if (!processStartDate.HasValue)
+                    continue;
+
+                var processEndDate = process.PlantDate ??
+                    (process.EndTime.HasValue
+                        ? GetLastActiveDate(process.EndTime.Value)
+                        : processStartDate.Value);
+                var firstDate = processStartDate.Value > fromDate
+                    ? processStartDate.Value
+                    : fromDate;
+                var lastDate = processEndDate < toDate ? processEndDate : toDate;
+                if (firstDate > lastDate)
+                    continue;
+
+                var isMultiDay =
+                    process.ReferenceId.HasValue ||
+                    hasContinuation ||
+                    processStartDate.Value != processEndDate;
+                var isCutoverSource =
+                    hasContinuation &&
+                    process.EndTime?.TimeOfDay == TimeSpan.Zero;
+
+                for (var date = firstDate; date <= lastDate; date = date.AddDays(1))
+                {
+                    dailyProcessSummaries.TryGetValue(
+                        (process.MachineId, process.PartProcessId, date),
+                        out var processSummary);
+                    dailyMachineSummaries.TryGetValue(
+                        (process.MachineId, date),
+                        out var machineSummary);
+
+                    var useMachineSummary =
+                        processSummary == null &&
+                        isMultiDay &&
+                        activeProcessCounts.GetValueOrDefault((process.MachineId, date)) == 1 &&
+                        machineSummary != null;
+
+                    var useProcessTimes = !isMultiDay || process.ReferenceId.HasValue;
+
+                    var workingTime = isCutoverSource
+                        ? GetHigherTimeValue(process.WorkingTime, processSummary?.WorkingTime)
+                        : processSummary?.WorkingTime ??
+                            (useProcessTimes
+                                ? process.WorkingTime
+                                : useMachineSummary ? machineSummary!.WorkingTime : null);
+                    var waitingTime = isCutoverSource
+                        ? GetHigherTimeValue(process.WaitingTime, processSummary?.WaitingTime)
+                        : processSummary?.WaitingTime ??
+                            (useProcessTimes
+                                ? process.WaitingTime
+                                : useMachineSummary ? machineSummary!.WaitingTime : null);
+                    var setupTime = isCutoverSource
+                        ? GetHigherTimeValue(process.SetupTime, processSummary?.SetupTime)
+                        : processSummary?.SetupTime ??
+                            (useProcessTimes
+                                ? process.SetupTime
+                                : useMachineSummary ? machineSummary!.SetupTime : null);
+
+                    dailyRows.Add(CreateDailyReportRow(
+                        process,
+                        date,
+                        isMultiDay,
+                        date == processStartDate.Value &&
+                            !process.ReferenceId.HasValue
+                            ? process.StartTime
+                            : null,
+                        process.EndTime.HasValue &&
+                            !(isMultiDay &&
+                              process.EndTime.Value.TimeOfDay == TimeSpan.Zero) &&
+                            DateOnly.FromDateTime(process.EndTime.Value) == date
+                            ? process.EndTime
+                            : null,
+                        workingTime,
+                        waitingTime,
+                        setupTime,
+                        machineSummary == null
+                            ? null
+                            : machineSummary.WorkingTime +
+                              machineSummary.WaitingTime +
+                              machineSummary.SetupTime));
+                }
+            }
+
+            return dailyRows;
+        }
+
+        private static DateOnly GetLastActiveDate(DateTime endTime)
+        {
+            var endDate = DateOnly.FromDateTime(endTime);
+            return endTime.TimeOfDay == TimeSpan.Zero
+                ? endDate.AddDays(-1)
+                : endDate;
+        }
+
+        private static double? GetHigherTimeValue(double? processTime, double? dailySummaryTime)
+        {
+            if (!processTime.HasValue)
+                return dailySummaryTime;
+
+            if (!dailySummaryTime.HasValue)
+                return processTime;
+
+            return Math.Max(processTime.Value, dailySummaryTime.Value);
+        }
+
+        private static PartProcessKPIResponse CreateDailyReportRow(
+            PartProcessKPIResponse process,
+            DateOnly reportDate,
+            bool isMultiDay,
+            DateTime? startTime,
+            DateTime? endTime,
+            double? workingTime,
+            double? waitingTime,
+            double? setupTime,
+            double? dailyMachineTotalTime)
+        {
+            return new PartProcessKPIResponse
+            {
+                MachineId = process.MachineId,
+                MachineName = process.MachineName,
+                MachineCode = process.MachineCode,
+                IndexId = process.IndexId,
+                IndexCode = process.IndexCode,
+                PartId = process.PartId,
+                PartCode = process.PartCode,
+                PartProcessId = process.PartProcessId,
+                Quantity = process.Quantity,
+                ProcessedQuantity = process.ProcessedQuantity,
+                ReportDate = reportDate,
+                IsMultiDay = isMultiDay,
+                DailyMachineTotalTime = dailyMachineTotalTime,
+                WorkingTime = workingTime,
+                SetupTime = setupTime,
+                WaitingTime = waitingTime,
+                ProgrammingTime = isMultiDay ? 0 : process.ProgrammingTime,
+                TotalTime = workingTime.HasValue ||
+                    waitingTime.HasValue ||
+                    setupTime.HasValue
+                    ? (workingTime ?? 0) + (waitingTime ?? 0) + (setupTime ?? 0)
+                    : isMultiDay ? null : process.TotalTime,
+                PlantDate = process.PlantDate,
+                StartTime = startTime,
+                EndTime = endTime,
+                EstimatedTime = process.EstimatedTime,
+                PartType = process.PartType,
+                NewRepair = process.NewRepair,
+                Status = process.Status
+            };
         }
 
         public async Task<int> GetProcessedQuantityByReferenceId(int? referenceId)
@@ -460,9 +980,36 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
             if (!referenceId.HasValue)
                 return 0;
 
-            return _dbContext.PartProcesses
-                   .Where(pp => pp.Id == referenceId || pp.ReferenceId == referenceId)
-                   .Sum(pp => pp.ProcessedQuantity);
+            return await _dbContext.PartProcesses
+                .Where(pp => pp.Id == referenceId || pp.ReferenceId == referenceId)
+                .SumAsync(pp => pp.ProcessedQuantity);
+        }
+
+        public async Task<bool> IsCutoverLockedAsync(int processId)
+        {
+            var process = await _dbContext.PartProcesses
+                .Where(candidate => candidate.Id == processId)
+                .Select(candidate => new
+                {
+                    candidate.Id,
+                    candidate.ReferenceId,
+                    candidate.PlantDate,
+                    candidate.EndTime
+                })
+                .FirstOrDefaultAsync();
+
+            if (process?.EndTime is not DateTime endTime ||
+                endTime.TimeOfDay != TimeSpan.Zero ||
+                !process.PlantDate.HasValue)
+            {
+                return false;
+            }
+
+            var rootProcessId = process.ReferenceId ?? process.Id;
+            return await _dbContext.PartProcesses.AnyAsync(candidate =>
+                (candidate.ReferenceId == rootProcessId ||
+                 candidate.ReferenceId == process.Id) &&
+                candidate.PlantDate > process.PlantDate);
         }
 
         public async Task<List<int>> GetPrioritizeMachineIdsByMachineIdsAndDateAsync(List<int> machineIds, DateTime date)
@@ -497,18 +1044,36 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
 
         public async Task RemoveEquivalent(PartProcess partProcess, int indexId)
         {
-            var today = DateOnly.FromDateTime(DateTime.Now);
+            var today = VietnamTime.Today;
+            var rootProcessId = partProcess.ReferenceId ?? partProcess.Id;
 
-            var todayProcesses = await _dbContext.PartProcesses.Where(pp =>
+            var todayProcesses = await _dbContext.PartProcesses
+                .Where(pp =>
+                    pp.Id != partProcess.Id &&
                     pp.PlantDate >= today &&
                     pp.PartId == partProcess.PartId &&
                     pp.MachineId == partProcess.MachineId &&
+                    pp.Sequence == partProcess.Sequence &&
                     pp.Part != null &&
                     !pp.Part.IsClosed &&
-                    pp.Part.IndexId == indexId)
+                    pp.Part.IndexId == indexId &&
+                    (pp.ReferenceId == rootProcessId || pp.ReferenceId == null))
                 .ToListAsync();
 
-            _dbContext.PartProcesses.RemoveRange(todayProcesses);
+            var safeDuplicates = todayProcesses
+                .Where(IsSafeToRemoveUnstartedPlan)
+                .ToList();
+
+            _dbContext.PartProcesses.RemoveRange(safeDuplicates);
+
+            foreach (var unsafeDuplicate in todayProcesses.Except(safeDuplicates))
+            {
+                _logger.LogWarning(
+                    "Không xóa kế hoạch tương ứng khi công đoạn hoàn thành vì bản ghi đã có dữ liệu thực tế. " +
+                    "CompletedProcessId={CompletedProcessId}, PreservedProcessId={PreservedProcessId}",
+                    partProcess.Id,
+                    unsafeDuplicate.Id);
+            }
         }
     }
 }

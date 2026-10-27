@@ -13,6 +13,9 @@ export interface PartProcessKPI {
   partProcessId: number;
   quantity: number;
   processedQuantity: number;
+  reportDate?: string;
+  isMultiDay?: boolean;
+  dailyMachineTotalTime?: number;
   workingTime?: number;
   setupTime?: number;
   waitingTime?: number;

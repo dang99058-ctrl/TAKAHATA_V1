@@ -41,6 +41,9 @@ namespace TAKAHATA.Application.Manufacturing.Commands
                 if (machine == null)
                     return Errors.Machine.NotFound;
 
+                if (await _partProcessRepository.IsCutoverLockedAsync(request.ProcessId))
+                    return Errors.Part.ProcessCutoverLocked;
+
                 if (machine.IsAutomatic)
                 {
                     var checkResult = await _iPLCService.IsProcessing(machine);
@@ -68,6 +71,7 @@ namespace TAKAHATA.Application.Manufacturing.Commands
                         return Errors.Part.NotFoundProcess;
 
                     partProcess.Status = ProcessStatus.InProgress;
+                    partProcess.EndTime = null;
 
                     if (partProcess.StartTime == null)
                         partProcess.StartTime = DateTime.Now;

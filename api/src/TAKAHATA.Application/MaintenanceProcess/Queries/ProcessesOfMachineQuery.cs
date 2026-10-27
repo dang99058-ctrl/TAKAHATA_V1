@@ -9,5 +9,6 @@ namespace TAKAHATA.Application.MaintenanceProcess.Queries
     public record ProcessesOfMachineQuery(
         int MachineId,
         int? Page,
-        int? PageSize) : IRequest<ErrorOr<SearchResponse<List<ManufacturingProcessResponse>>>>;
+        int? PageSize,
+        DateOnly? PlantDate = null) : IRequest<ErrorOr<SearchResponse<List<ManufacturingProcessResponse>>>>;
 }

@@ -69,6 +69,9 @@ namespace TAKAHATA.Application.Manufacturing.Commands
                     return Errors.Machine.NotFound;
                 }
 
+                if (await _partProcessRepository.IsCutoverLockedAsync(request.ProcessId))
+                    return Errors.Part.ProcessCutoverLocked;
+
                 if (machine.IsAutomatic)
                 {
                     var checkResult = await _iPLCService.IsProcessing(machine);
@@ -167,14 +170,9 @@ namespace TAKAHATA.Application.Manufacturing.Commands
                     partProcess.EndTime = DateTime.Now;
 
                     // Kiểm tra xem số lượng người dùng gửi có hợp lệ không
-                    var processedQuantity = 0;
-
-                    if (partProcess.ReferenceId == null)
-                        processedQuantity = partProcess.ProcessedQuantity;
-                    else
-                    {
-                        processedQuantity = await _partProcessRepository.GetProcessedQuantityByReferenceId(partProcess.ReferenceId);
-                    }
+                    var processedQuantity =
+                        await _partProcessRepository.GetProcessedQuantityByReferenceId(
+                            partProcess.ReferenceId ?? partProcess.Id);
 
                     if (processedQuantity + request.ProcessedQuantity > part.Quantity)
                     {
@@ -206,7 +204,12 @@ namespace TAKAHATA.Application.Manufacturing.Commands
 
                     if (processedQuantity + request.ProcessedQuantity == part.Quantity)
                     {
-                        partProcess.Status = ProcessStatus.Completed;
+                        var rootProcessId = partProcess.ReferenceId ?? partProcess.Id;
+                        var processChain = await _partProcessRepository.GetRelatedProcessesAsync(
+                            [rootProcessId]);
+                        foreach (var relatedProcess in processChain)
+                            relatedProcess.Status = ProcessStatus.Completed;
+
                         await _partProcessRepository.RemoveEquivalent(partProcess, part.IndexId);
                     }
                     else

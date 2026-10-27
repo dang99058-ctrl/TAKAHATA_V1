@@ -37,6 +37,9 @@ namespace TAKAHATA.Application.Manufacturing.Commands
             if (machine == null)
                 return Errors.Machine.NotFound;
 
+            if (await _partProcessRepository.IsCutoverLockedAsync(request.ProcessId))
+                return Errors.Part.ProcessCutoverLocked;
+
             var result = await _iPLCService.WriteMachineData(machine, 0, 0, 7);
 
             if (result.IsSuccess)

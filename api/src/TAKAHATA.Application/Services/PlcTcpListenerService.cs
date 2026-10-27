@@ -192,7 +192,7 @@ namespace TAKAHATA.Application.Services
                             count,
                             text);
 
-                        // Thanh ghi status | trạng thái máy | mã Part | mã Process | Machine Running | Machine Waiting | Machine Setup
+                        // Thanh ghi status | trạng thái máy (8 = gói chốt ngày) | mã Part | mã Process | Machine Running | Machine Waiting | Machine Setup
                         // Format 1100 | 1 | 23 | 159 | 0.50 | 1.00 | 0.03
                         if (!string.IsNullOrEmpty(text))
                         {

@@ -24,8 +24,10 @@ export interface MachineProcess {
   estimatedTime?: number | null;
   partType?: PartType | null;
   isOverdue: boolean | null;
+  isCutoverCompleted: boolean;
   indexCode: string | null;
   referenceId: number | null;
   processedQuantity: number | null;
+  totalProcessedQuantity: number;
   donePreviouslyQuantity: number | null;
 }

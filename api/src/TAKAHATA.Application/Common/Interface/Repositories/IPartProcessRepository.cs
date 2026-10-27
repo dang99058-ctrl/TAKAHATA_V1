@@ -10,13 +10,15 @@ namespace TAKAHATA.Application.Common.Interface.Repositories
         Task<List<int>> GetPrioritizeMachineIdsByMachineIdsAndDateAsync(List<int> machineIds, DateTime date);
 
         Task<int> GetProcessedQuantityByReferenceId(int? referenceId);
+        Task<bool> IsCutoverLockedAsync(int processId);
         Task<List<PartProcess>> GetRelatedProcessesAsync(HashSet<int> processIds);
         Task HandleExtend();
         Task RemoveEquivalent(PartProcess partProcess, int indexId);
         Task<SearchResponse<List<ManufacturingProcessResponse>>> SearchByMachineIdAsync(
             int machineId,
             int? page,
-            int? pageSize);
+            int? pageSize,
+            DateOnly? plantDate = null);
         Task<List<PartProcessKPIResponse>> SearchKPIAsync(
             string? searchMachineKeyword,
             string? searchIndexKeyword,

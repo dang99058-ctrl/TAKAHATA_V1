@@ -26,7 +26,11 @@ namespace TAKAHATA.Application.MaintenanceProcess.Queries
             CancellationToken cancellationToken)
         {
             return await _partProcessRepository
-                .SearchByMachineIdAsync(request.MachineId, request.Page, request.PageSize);
+                .SearchByMachineIdAsync(
+                    request.MachineId,
+                    request.Page,
+                    request.PageSize,
+                    request.PlantDate);
         }
     }
 }

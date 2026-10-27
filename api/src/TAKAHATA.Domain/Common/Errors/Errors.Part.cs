@@ -18,6 +18,11 @@ namespace TAKAHATA.Domain.Common.Errors
             public static Error IsClosed =>
                 Error.Validation(code: "Part.IsClosed", description: "Part đã đóng, không thể thao tác.");
 
+            public static Error ProcessCutoverLocked =>
+                Error.Conflict(
+                    code: "PartProcess.CutoverLocked",
+                    description: "Công đoạn đã được chốt sang ngày kế tiếp nên không thể chỉnh sửa hoặc xóa.");
+
             public static Error ApproveFalse =>
                 Error.Failure(code: "Part.ApproveFalse", description: "Phê duyệt part không thành công.");
 

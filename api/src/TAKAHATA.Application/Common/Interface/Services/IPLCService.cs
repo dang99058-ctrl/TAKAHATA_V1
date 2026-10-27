@@ -10,6 +10,7 @@ namespace TAKAHATA.Application.Common.Interface.Services
         public bool TestConnection();
         Task<PLCResult<WriteResult>> WriteMachineData(Machine machine, int partId, int processId, int status);
         Task<PLCResult<WriteResult>> WriteMachineStatus(Machine machine, int status);
+        Task<PLCResult<WriteResult>> WriteProcessStatus(Machine machine, int status);
         Task<PLCResult<ReadResult>> ReadMachineData(Machine machine);
         Task<PLCResult<List<ReadResult>>> ReadMachinesData(List<Machine> machines);
         Task<PLCResult<WriteResult>> WriteMachineData(

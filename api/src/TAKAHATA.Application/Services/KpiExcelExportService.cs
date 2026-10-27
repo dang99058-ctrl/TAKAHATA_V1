@@ -17,7 +17,7 @@ namespace TAKAHATA.Application.Services
         {
             using var workbook = new XLWorkbook();
             var worksheet = workbook.Worksheets.Add("Machine KPI");
-            const int lastColumn = 8;
+            const int lastColumn = 12;
 
             CreateTitle(
                 worksheet,
@@ -29,44 +29,48 @@ namespace TAKAHATA.Application.Services
             var headers = new[]
             {
             "STT",
+            "Ngày",
             "Mã máy",
             "Tên máy",
             "Loại máy",
             "Hoạt động (giờ)",
+            "Chờ (giờ)",
+            "Gá đặt (giờ)",
             "Bảo trì (giờ)",
+            "Lost Time (giờ)",
             "Trạng thái",
             "Hiệu suất (%)"
         };
 
             WriteHeaders(worksheet, headers);
 
-            var totalDays = to.DayNumber - from.DayNumber + 1;
-            var availableHoursPerMachine = Math.Max(totalDays, 0) * 8d;
             var row = HeaderRow + 1;
             var index = 1;
 
             foreach (var item in items)
             {
-                var efficiency = availableHoursPerMachine > 0
-                    ? (item.WorkingTime ?? 0) / availableHoursPerMachine * 100
-                    : 0;
-
                 worksheet.Cell(row, 1).Value = index++;
-                worksheet.Cell(row, 2).Value = item.Code ?? string.Empty;
-                worksheet.Cell(row, 3).Value = item.Name ?? item.Code ?? string.Empty;
-                worksheet.Cell(row, 4).Value = item.Type ?? string.Empty;
-                worksheet.Cell(row, 5).Value = item.WorkingTime ?? 0;
-                worksheet.Cell(row, 6).Value = item.MaintenanceTime ?? 0;
-                worksheet.Cell(row, 7).Value = item.MachineStatus.ToString();
-                worksheet.Cell(row, 8).Value = efficiency;
+                worksheet.Cell(row, 2).Value = item.ReportDate.ToDateTime(TimeOnly.MinValue);
+                worksheet.Cell(row, 3).Value = item.Code ?? string.Empty;
+                worksheet.Cell(row, 4).Value = item.Name ?? item.Code ?? string.Empty;
+                worksheet.Cell(row, 5).Value = item.Type ?? string.Empty;
+                worksheet.Cell(row, 6).Value = item.WorkingTime ?? 0;
+                worksheet.Cell(row, 7).Value = item.WaitingTime ?? 0;
+                worksheet.Cell(row, 8).Value = item.SetupTime ?? 0;
+                worksheet.Cell(row, 9).Value = item.MaintenanceTime ?? 0;
+                worksheet.Cell(row, 10).Value = item.LostTime;
+                worksheet.Cell(row, 11).Value = item.MachineStatus.ToString();
+                worksheet.Cell(row, 12).Value = item.UtilizationRate;
                 row++;
             }
 
             if (row > HeaderRow + 1)
             {
-                worksheet.Range(HeaderRow + 1, 5, row - 1, 6)
+                worksheet.Range(HeaderRow + 1, 2, row - 1, 2)
+                    .Style.DateFormat.Format = "dd/MM/yyyy";
+                worksheet.Range(HeaderRow + 1, 6, row - 1, 10)
                     .Style.NumberFormat.Format = "0.00";
-                worksheet.Range(HeaderRow + 1, 8, row - 1, 8)
+                worksheet.Range(HeaderRow + 1, 12, row - 1, 12)
                     .Style.NumberFormat.Format = "0.00";
             }
 
@@ -174,8 +178,10 @@ namespace TAKAHATA.Application.Services
                     var itemsOfDay = items
                         .Where(x =>
                             x.MachineId == machine.Id &&
-                            x.StartTime.HasValue &&
-                            DateOnly.FromDateTime(x.StartTime.Value) == date)
+                            (x.ReportDate == date ||
+                             (!x.ReportDate.HasValue &&
+                              x.StartTime.HasValue &&
+                              DateOnly.FromDateTime(x.StartTime.Value) == date)))
                         .OrderBy(x => x.StartTime)
                         .ToList();
 
@@ -189,8 +195,15 @@ namespace TAKAHATA.Application.Services
                     }
 
                     // Tính một lần cho mỗi máy/ngày.
-                    var totalTimeOfDay = itemsOfDay.Sum(x => x.TotalTime) ?? 0;
-                    var h = Math.Round(totalTimeOfDay / 24 * 100, 2);
+                    var totalTimeOfDay =
+                        itemsOfDay.FirstOrDefault(x => x.DailyMachineTotalTime.HasValue)
+                            ?.DailyMachineTotalTime ??
+                        itemsOfDay.Sum(x => x.TotalTime) ??
+                        0;
+                    var h = Math.Round(
+                        Math.Min(Math.Max(totalTimeOfDay, 0), 24) / 24 * 100,
+                        2);
+                    var lostTime = Math.Max(24 - totalTimeOfDay, 0);
                     var isFirstRowOfDay = true;
 
                     foreach (var item in itemsOfDay)
@@ -201,10 +214,11 @@ namespace TAKAHATA.Application.Services
                         if (isFirstRowOfDay)
                         {
                             worksheet.Cell(row, 1).Value =
-                                date.ToDateTime(TimeOnly.MinValue);
+                                (item.ReportDate ?? date).ToDateTime(TimeOnly.MinValue);
 
                             worksheet.Cell(row, 15).Value = h;
-                            worksheet.Cell(row, 16).Value = 100 - h;
+                            worksheet.Cell(row, 16).Value =
+                                Math.Round(lostTime / 24 * 100, 2);
 
                             isFirstRowOfDay = false;
                         }
@@ -221,9 +235,13 @@ namespace TAKAHATA.Application.Services
                         // H, I: Thời gian bắt đầu và kết thúc.
                         if (item.StartTime.HasValue)
                             worksheet.Cell(row, 8).Value = item.StartTime.Value;
+                        else if (item.IsMultiDay)
+                            worksheet.Cell(row, 8).Value = "-";
 
                         if (item.EndTime.HasValue)
                             worksheet.Cell(row, 9).Value = item.EndTime.Value;
+                        else if (item.IsMultiDay)
+                            worksheet.Cell(row, 9).Value = "-";
 
                         worksheet.Range(row, 8, row, 9)
                             .Style.DateFormat.Format = "hh:mm";

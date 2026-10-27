@@ -22,8 +22,10 @@ namespace TAKAHATA.Contracts.IndexAndPart
         public double? EstimatedTime { get; set; }
         public PartType? PartType { get; set; }
         public int ProcessedQuantity { get; set; }
+        public int TotalProcessedQuantity { get; set; }
 
         public bool IsOverdue { get; set; }
+        public bool IsCutoverCompleted { get; set; }
         public int? ReferenceId { get; set; }
         public int DonePreviouslyQuantity { get; set; }
     }

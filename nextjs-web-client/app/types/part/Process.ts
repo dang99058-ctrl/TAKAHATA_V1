@@ -15,6 +15,7 @@ export interface ManufacturingProcess {
   quantity: number;
   processedQuantity: number;
   totalProcessedQuantity: number;
+  referenceId?: number | null;
   status: ProcessStatus;
   note: string;
   startTime?: Dayjs | null;
@@ -29,6 +30,7 @@ export interface ManufacturingProcess {
   prioritize: boolean | false;
   processType?: ManufacturingProcessType | null;
   isOverdue?: boolean | null;
+  isCutoverCompleted: boolean;
   totalTime?: number | null;
   isSettingUp: boolean | false;
 }
