@@ -14,6 +14,7 @@ import {
   Table,
   Tag,
   Typography,
+  DatePicker,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
@@ -71,6 +72,9 @@ export default function WorkerPage() {
 
   // New state
   const [today, setToday] = useState<Dayjs>(() => dayjs().startOf("day"));
+  const [selectedPlantDate, setSelectedPlantDate] = useState<Dayjs>(() =>
+    dayjs().startOf("day"),
+  );
   const [machineKeyword, setMachineKeyword] = useState("");
   const [machines, setMachines] = useState<Machine[]>([]);
   const [selectedMachine, setSelectedMachine] = useState<Machine | null>(null);
@@ -109,7 +113,7 @@ export default function WorkerPage() {
         page,
         pageSize,
         machineId: selectedMachine.id,
-        plantDate: today.format("YYYY-MM-DD"),
+        plantDate: selectedPlantDate.format("YYYY-MM-DD"),
       };
 
       const result = await getPartProcessByMachineAsync(request);
@@ -135,18 +139,21 @@ export default function WorkerPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, selectedMachine, today]);
+  }, [page, pageSize, selectedMachine, selectedPlantDate]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
       const currentDay = dayjs().startOf("day");
-      setToday((previousDay) =>
-        previousDay.isSame(currentDay, "day") ? previousDay : currentDay,
-      );
+      if (!today.isSame(currentDay, "day")) {
+        setSelectedPlantDate((selectedDate) =>
+          selectedDate.isSame(today, "day") ? currentDay : selectedDate,
+        );
+        setToday(currentDay);
+      }
     }, 60_000);
 
     return () => window.clearInterval(timer);
-  }, []);
+  }, [today]);
 
   useEffect(() => {
     const run = () => {
@@ -664,7 +671,18 @@ export default function WorkerPage() {
                 <div className="d-flex align-items-center gap-2">
                   <span className="section-number">2</span>
                   <span>Danh sách chi tiết cần gia công</span>
-                  <Tag color="blue">{today.format("DD/MM/YYYY")}</Tag>
+                  <DatePicker
+                    allowClear={false}
+                    value={selectedPlantDate}
+                    format="DD/MM/YYYY"
+                    onChange={(date) => {
+                      if (date) {
+                        setSelectedPlantDate(date.startOf("day"));
+                        setPage(1);
+                        setSelectedProcess(null);
+                      }
+                    }}
+                  />
                 </div>
 
                 <Button

@@ -18,6 +18,37 @@ export const testConnectionAsync = async (): Promise<boolean> => {
   return response.data;
 };
 
+export const testDailyCutoverAsync = async (
+  reportDate: string,
+  machineId: number,
+): Promise<void> => {
+  await apiClient.post("/Settings/test-daily-cutover", {
+    reportDate,
+    machineId,
+  });
+};
+
+export const testDailyExtensionAsync = async (
+  targetDate: string,
+): Promise<void> => {
+  await apiClient.post("/Settings/test-daily-extension", { targetDate });
+};
+
+export interface ClearPendingDailyCutoverResponse {
+  machineId: number;
+  reportDate: string;
+}
+
+export const clearPendingDailyCutoverAsync = async (
+  machineId: number,
+): Promise<ClearPendingDailyCutoverResponse> => {
+  const response = await apiClient.post<ClearPendingDailyCutoverResponse>(
+    "/Settings/clear-pending-daily-cutover",
+    { machineId },
+  );
+  return response.data;
+};
+
 export const writeMachineBitsAsync = async (
   request: unknown,
 ): Promise<boolean> => {

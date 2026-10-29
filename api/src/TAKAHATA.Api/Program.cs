@@ -195,10 +195,12 @@ RecurringJob.AddOrUpdate<DailyJob>(
     cronExpression: "0 1 * * *",
     options: new RecurringJobOptions
     {
-        TimeZone = VietnamTime.TimeZone
+        TimeZone = VietnamTime.TimeZone,
+        MisfireHandling = MisfireHandlingMode.Ignorable
     });
 
-Log.Information("Đã đăng ký lịch gia hạn kế hoạch tự động hằng ngày lúc 1:00.");
+Log.Information(
+    "Đã đăng ký lịch gia hạn kế hoạch tự động hằng ngày lúc 1:00; bỏ qua lịch bị lỡ khi API ngừng hoạt động.");
 
 RecurringJob.AddOrUpdate<DailyJob>(
     recurringJobId: "daily-machine-time-cutover-at-midnight",
