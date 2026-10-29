@@ -353,6 +353,21 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                             _dbContext.PartProcesses.Add(existingContinuation);
                         }
 
+                        var cutoverAt = today.ToDateTime(TimeOnly.MinValue);
+                        var sourceEndTime = partProcess.EndTime;
+                        if (partProcess.PendingEndTime.HasValue &&
+                            (!sourceEndTime.HasValue ||
+                             partProcess.PendingEndTime < sourceEndTime))
+                        {
+                            sourceEndTime = partProcess.PendingEndTime;
+                        }
+
+                        partProcess.EndTime = sourceEndTime.HasValue &&
+                            sourceEndTime.Value < cutoverAt
+                                ? sourceEndTime
+                                : cutoverAt;
+                        partProcess.PendingEndTime = null;
+
                         var duplicateTodayPlans = await _dbContext.PartProcesses
                             .Where(candidate =>
                                 candidate.Id != existingContinuation.Id &&
