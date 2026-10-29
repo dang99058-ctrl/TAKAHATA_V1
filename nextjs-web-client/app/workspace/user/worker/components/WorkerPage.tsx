@@ -5,7 +5,6 @@ import {
   Button,
   Card,
   Col,
-  DatePicker,
   Empty,
   Form,
   Input,
@@ -71,9 +70,7 @@ export default function WorkerPage() {
   const [isCreateOpen, setIsCreateOpen] = useState(false);
 
   // New state
-  const [selectedPlantDate, setSelectedPlantDate] = useState<Dayjs>(() =>
-    dayjs().startOf("day"),
-  );
+  const [today, setToday] = useState<Dayjs>(() => dayjs().startOf("day"));
   const [machineKeyword, setMachineKeyword] = useState("");
   const [machines, setMachines] = useState<Machine[]>([]);
   const [selectedMachine, setSelectedMachine] = useState<Machine | null>(null);
@@ -112,7 +109,7 @@ export default function WorkerPage() {
         page,
         pageSize,
         machineId: selectedMachine.id,
-        plantDate: selectedPlantDate.format("YYYY-MM-DD"),
+        plantDate: today.format("YYYY-MM-DD"),
       };
 
       const result = await getPartProcessByMachineAsync(request);
@@ -138,7 +135,18 @@ export default function WorkerPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, selectedMachine, selectedPlantDate]);
+  }, [page, pageSize, selectedMachine, today]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const currentDay = dayjs().startOf("day");
+      setToday((previousDay) =>
+        previousDay.isSame(currentDay, "day") ? previousDay : currentDay,
+      );
+    }, 60_000);
+
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const run = () => {
@@ -656,18 +664,7 @@ export default function WorkerPage() {
                 <div className="d-flex align-items-center gap-2">
                   <span className="section-number">2</span>
                   <span>Danh sách chi tiết cần gia công</span>
-                  <DatePicker
-                    allowClear={false}
-                    value={selectedPlantDate}
-                    format="DD/MM/YYYY"
-                    onChange={(date) => {
-                      if (date) {
-                        setSelectedPlantDate(date.startOf("day"));
-                        setPage(1);
-                        setSelectedProcess(null);
-                      }
-                    }}
-                  />
+                  <Tag color="blue">{today.format("DD/MM/YYYY")}</Tag>
                 </div>
 
                 <Button

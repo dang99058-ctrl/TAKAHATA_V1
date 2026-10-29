@@ -38,37 +38,6 @@ export const readMachineBitsAsync = async (
   return response.data;
 };
 
-export interface TestDailyCutoverResponse {
-  reportDate: string;
-  continuationDate: string;
-}
-
-export const testDailyCutoverAsync = async (
-  reportDate: string,
-  machineId: number,
-): Promise<TestDailyCutoverResponse> => {
-  const response = await apiClient.post<TestDailyCutoverResponse>(
-    "/Settings/test-daily-cutover",
-    { reportDate, machineId },
-  );
-  return response.data;
-};
-
-export interface TestDailyExtensionResponse {
-  targetDate: string;
-  previousDate: string;
-}
-
-export const testDailyExtensionAsync = async (
-  targetDate: string,
-): Promise<TestDailyExtensionResponse> => {
-  const response = await apiClient.post<TestDailyExtensionResponse>(
-    "/Settings/test-daily-extension",
-    { targetDate },
-  );
-  return response.data;
-};
-
 export interface ClearPendingDailyCutoverResponse {
   machineId: number;
   reportDate: string;

@@ -189,8 +189,16 @@ if (app.Environment.IsDevelopment())
 
 app.UseHangfireDashboard("/hangfire");
 
-RecurringJob.RemoveIfExists("daily-job-at-1am");
-Log.Information("Đã tạm dừng lịch gia hạn tự động lúc 1:00 trong thời gian kiểm thử.");
+RecurringJob.AddOrUpdate<DailyJob>(
+    recurringJobId: "daily-job-at-1am",
+    methodCall: job => job.ExecuteAsync(),
+    cronExpression: "0 1 * * *",
+    options: new RecurringJobOptions
+    {
+        TimeZone = VietnamTime.TimeZone
+    });
+
+Log.Information("Đã đăng ký lịch gia hạn kế hoạch tự động hằng ngày lúc 1:00.");
 
 RecurringJob.AddOrUpdate<DailyJob>(
     recurringJobId: "daily-machine-time-cutover-at-midnight",

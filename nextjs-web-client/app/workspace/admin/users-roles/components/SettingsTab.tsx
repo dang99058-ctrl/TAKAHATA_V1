@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Button,
   Card,
-  DatePicker,
   Divider,
   Form,
   Input,
@@ -24,14 +23,12 @@ import {
   WifiOutlined,
 } from "@ant-design/icons";
 import { toast } from "react-toastify";
-import dayjs, { type Dayjs } from "dayjs";
+import dayjs from "dayjs";
 import { ApiError } from "@/app/types/common/ApiError";
 import {
   clearPendingDailyCutoverAsync,
   getSettingsAsync,
   testConnectionAsync,
-  testDailyCutoverAsync,
-  testDailyExtensionAsync,
   readMachineBitsAsync,
   updateSettingsAsync,
   writeMachineBitsAsync,
@@ -60,13 +57,8 @@ type ReadFormValues = {
   processStatus?: number;
 };
 
-interface TestCutoverFormValues {
-  reportDate: Dayjs;
+interface PendingCutoverFormValues {
   machineId: number;
-}
-
-interface TestExtensionFormValues {
-  targetDate: Dayjs;
 }
 
 interface Props {
@@ -92,11 +84,8 @@ export default function SettingsTab({ active }: Props) {
 
   const [loadingMachines, setLoadingMachines] = useState(false);
   const [machineSource, setMachineSource] = useState<Machine[]>([]);
-  const [testingDailyCutover, setTestingDailyCutover] = useState(false);
-  const [testingDailyExtension, setTestingDailyExtension] = useState(false);
   const [clearingPendingCutover, setClearingPendingCutover] = useState(false);
-  const [cutoverForm] = Form.useForm<TestCutoverFormValues>();
-  const [extensionForm] = Form.useForm<TestExtensionFormValues>();
+  const [pendingCutoverForm] = Form.useForm<PendingCutoverFormValues>();
   const [selectedWriteMachine, setSelectedWriteMachine] =
     useState<Machine | null>(null);
   const [selectedReadMachine, setSelectedReadMachine] =
@@ -196,97 +185,10 @@ export default function SettingsTab({ active }: Props) {
     }
   };
 
-  const handleSubmitDailyCutoverTest = (values: TestCutoverFormValues) => {
-    const reportDate = values.reportDate.format("YYYY-MM-DD");
-    const continuationDate = values.reportDate.add(1, "day").format("DD/MM/YYYY");
-    const selectedMachine = machineSource.find(
-      (machine) => machine.id === values.machineId,
-    );
-
-    Modal.confirm({
-      title: "Xác nhận gửi lệnh chốt ngày",
-      content: (
-        <span>
-          Gửi lệnh chốt ngày {values.reportDate.format("DD/MM/YYYY")} cho máy{" "}
-          <strong>
-            {selectedMachine
-              ? `${selectedMachine.name} - ${selectedMachine.code}`
-              : values.machineId}
-          </strong>
-          . Nếu PLC phản hồi thành công, kế hoạch sẽ được chuyển tiếp sang ngày{" "}
-          {continuationDate}.
-        </span>
-      ),
-      okText: "Gửi lệnh",
-      cancelText: "Hủy",
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        setTestingDailyCutover(true);
-        try {
-          await testDailyCutoverAsync(reportDate, values.machineId);
-          toast.success(
-            `Đã gửi lệnh chốt ngày ${values.reportDate.format("DD/MM/YYYY")} cho máy.`,
-          );
-        } catch (error) {
-          console.error("Gửi lệnh kiểm thử chốt ngày thất bại:", error);
-
-          if (error instanceof ApiError) {
-            toast.error(error.getDisplayMessage());
-          } else {
-            toast.error("Gửi lệnh kiểm thử chốt ngày thất bại.");
-          }
-        } finally {
-          setTestingDailyCutover(false);
-        }
-      },
-    });
-  };
-
-  const handleSubmitDailyExtensionTest = (
-    values: TestExtensionFormValues,
-  ) => {
-    const targetDate = values.targetDate.format("YYYY-MM-DD");
-    const previousDate = values.targetDate.subtract(1, "day").format("DD/MM/YYYY");
-    const targetDateLabel = values.targetDate.format("DD/MM/YYYY");
-
-    Modal.confirm({
-      title: "Xác nhận chạy thử gia hạn kế hoạch",
-      content: (
-        <span>
-          Chạy logic gia hạn như job 1:00 để chuyển các kế hoạch đủ điều kiện
-          từ ngày trước đó ({previousDate}) sang ngày {targetDateLabel} trên{" "}
-          <strong>tất cả máy</strong>. Thao tác có thể thay đổi dữ liệu kế
-          hoạch.
-        </span>
-      ),
-      okText: "Chạy gia hạn",
-      cancelText: "Hủy",
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        setTestingDailyExtension(true);
-        try {
-          await testDailyExtensionAsync(targetDate);
-          toast.success(
-            `Đã chạy logic gia hạn kế hoạch sang ngày ${targetDateLabel}.`,
-          );
-        } catch (error) {
-          console.error("Chạy thử gia hạn kế hoạch thất bại:", error);
-          if (error instanceof ApiError) {
-            toast.error(error.getDisplayMessage());
-          } else {
-            toast.error("Chạy thử gia hạn kế hoạch thất bại.");
-          }
-        } finally {
-          setTestingDailyExtension(false);
-        }
-      },
-    });
-  };
-
   const handleClearPendingCutover = async () => {
     let machineId: number;
     try {
-      const values = await cutoverForm.validateFields(["machineId"]);
+      const values = await pendingCutoverForm.validateFields(["machineId"]);
       machineId = values.machineId;
     } catch {
       return;
@@ -301,8 +203,8 @@ export default function SettingsTab({ active }: Props) {
       content: (
         <span>
           Chỉ tiếp tục nếu đã xác nhận PLC sẽ <strong>không còn gửi phản hồi
-          status=8 cũ</strong>. Nếu phản hồi cũ đến sau khi trigger lại, hệ thống
-          có thể gán nó nhầm cho lần test mới. Máy:{" "}
+          status=8 cũ</strong>. Nếu phản hồi cũ đến sau khi xóa trạng thái chờ,
+          hệ thống có thể gán nó nhầm cho lần chốt ngày tiếp theo. Máy:{" "}
           <strong>
             {selectedMachine
               ? `${selectedMachine.name} - ${selectedMachine.code}`
@@ -319,7 +221,7 @@ export default function SettingsTab({ active }: Props) {
         try {
           const result = await clearPendingDailyCutoverAsync(machineId);
           toast.success(
-            `Đã gỡ trạng thái chờ chốt ngày ${dayjs(result.reportDate).format("DD/MM/YYYY")}. Có thể trigger lại.`,
+            `Đã gỡ trạng thái chờ chốt ngày ${dayjs(result.reportDate).format("DD/MM/YYYY")}.`,
           );
         } catch (error) {
           console.error("Gỡ trạng thái chờ chốt ngày thất bại:", error);
@@ -548,42 +450,17 @@ export default function SettingsTab({ active }: Props) {
             </div>
           </Form>
 
-          <Card
-            className="mt-4"
-            title={
-              <Space>
-                <ThunderboltOutlined />
-                Kiểm thử tách kế hoạch lúc 0:00
-              </Space>
-            }
-          >
+          <Card className="mt-4" title="Gỡ trạng thái chờ PLC">
             <Typography.Paragraph type="secondary">
-              Chọn ngày cần chốt và một máy cụ thể. Lệnh chỉ được gửi đến máy đã
-              chọn; ngày tiếp tục là ngày kế tiếp.
+              Chỉ dùng khi đã xác nhận PLC không còn phản hồi status=8 cũ đang
+              chờ xử lý.
             </Typography.Paragraph>
-            <Form<TestCutoverFormValues>
-              form={cutoverForm}
+            <Form<PendingCutoverFormValues>
+              form={pendingCutoverForm}
               layout="vertical"
-              onFinish={handleSubmitDailyCutoverTest}
             >
-              <div className="row">
-                <div className="col-12 col-md-5">
-                  <Form.Item
-                    label="Ngày cần chốt"
-                    name="reportDate"
-                    rules={[
-                      { required: true, message: "Vui lòng chọn ngày cần chốt" },
-                    ]}
-                  >
-                    <DatePicker
-                      className="w-100"
-                      format="DD/MM/YYYY"
-                      placeholder="Chọn ngày"
-                      disabled={testingDailyCutover}
-                    />
-                  </Form.Item>
-                </div>
-                <div className="col-12 col-md-5">
+              <div className="row align-items-end">
+                <div className="col-12 col-md-8">
                   <Form.Item
                     label="Máy"
                     name="machineId"
@@ -598,7 +475,7 @@ export default function SettingsTab({ active }: Props) {
                       }}
                       loading={loadingMachines}
                       placeholder="Chọn máy"
-                      disabled={testingDailyCutover}
+                      disabled={clearingPendingCutover}
                       options={machineSource.map((machine) => ({
                         value: machine.id,
                         label: `${machine.name} - ${machine.code}`,
@@ -606,30 +483,16 @@ export default function SettingsTab({ active }: Props) {
                     />
                   </Form.Item>
                 </div>
-                <div className="col-12 col-md-2 d-flex align-items-end">
-                  <Form.Item className="w-100">
-                    <Button
-                      type="primary"
-                      danger
-                      htmlType="submit"
-                      icon={<ThunderboltOutlined />}
-                      loading={testingDailyCutover}
-                      disabled={loadingMachines || clearingPendingCutover}
-                      block
-                    >
-                      Trigger test
-                    </Button>
-                  </Form.Item>
-                </div>
-                <div className="col-12">
+                <div className="col-12 col-md-4">
                   <Button
                     danger
                     icon={<StopOutlined />}
                     loading={clearingPendingCutover}
-                    disabled={loadingMachines || testingDailyCutover}
+                    disabled={loadingMachines}
                     onClick={() => void handleClearPendingCutover()}
+                    block
                   >
-                    Gỡ trạng thái chờ PLC (chỉ khi đã xác nhận không còn phản hồi cũ)
+                    Gỡ trạng thái chờ PLC
                   </Button>
                 </div>
               </div>
@@ -641,56 +504,15 @@ export default function SettingsTab({ active }: Props) {
             title={
               <Space>
                 <ThunderboltOutlined />
-                Kiểm thử gia hạn kế hoạch lúc 1:00
+                Gia hạn kế hoạch tự động
               </Space>
             }
           >
             <Typography.Paragraph type="secondary">
-              Chọn ngày muốn gia hạn sang. Chức năng áp dụng logic của job 1:00
-              cho tất cả máy; ngày trước đó là ngày nguồn.
+              Hệ thống tự động gia hạn kế hoạch đủ điều kiện sang ngày hiện tại
+              lúc 1:00 hằng ngày (giờ Việt Nam). Việc chốt thời gian PLC vẫn
+              được thực hiện theo lịch riêng lúc 0:00.
             </Typography.Paragraph>
-            <Form<TestExtensionFormValues>
-              form={extensionForm}
-              layout="vertical"
-              onFinish={handleSubmitDailyExtensionTest}
-            >
-              <div className="row">
-                <div className="col-12 col-md-8">
-                  <Form.Item
-                    label="Ngày muốn gia hạn sang"
-                    name="targetDate"
-                    rules={[
-                      {
-                        required: true,
-                        message: "Vui lòng chọn ngày muốn gia hạn sang",
-                      },
-                    ]}
-                  >
-                    <DatePicker
-                      className="w-100"
-                      format="DD/MM/YYYY"
-                      placeholder="Chọn ngày"
-                      disabled={testingDailyExtension}
-                    />
-                  </Form.Item>
-                </div>
-                <div className="col-12 col-md-4 d-flex align-items-end">
-                  <Form.Item className="w-100">
-                    <Button
-                      type="primary"
-                      danger
-                      htmlType="submit"
-                      icon={<ThunderboltOutlined />}
-                      loading={testingDailyExtension}
-                      disabled={testingDailyCutover}
-                      block
-                    >
-                      Trigger test
-                    </Button>
-                  </Form.Item>
-                </div>
-              </div>
-            </Form>
           </Card>
 
           <div className="mt-4">

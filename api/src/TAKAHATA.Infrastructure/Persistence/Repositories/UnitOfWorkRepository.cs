@@ -41,20 +41,38 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                     !process.Part.IsClosed);
         }
 
-        public Task<int> FinalizeExpiredProcessStopsAsync(DateTime cutoff)
+        public async Task<int> FinalizeExpiredProcessStopsAsync(DateTime cutoff)
         {
-            return _dbContext.PartProcesses
+            var expiredStops = await _dbContext.PartProcesses
                 .Where(process =>
                     process.PendingEndTime.HasValue &&
                     process.EndTime == null &&
                     process.PendingEndTime <= cutoff)
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(
-                        process => process.EndTime,
-                        process => process.PendingEndTime)
-                    .SetProperty(
-                        process => process.PendingEndTime,
-                        (DateTime?)null));
+                .Select(process => new
+                {
+                    process.Id,
+                    PendingEndTime = process.PendingEndTime!.Value
+                })
+                .ToListAsync();
+
+            var finalizedCount = 0;
+            foreach (var expiredStop in expiredStops)
+            {
+                finalizedCount += await _dbContext.PartProcesses
+                    .Where(process =>
+                        process.Id == expiredStop.Id &&
+                        process.EndTime == null &&
+                        process.PendingEndTime == expiredStop.PendingEndTime)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(
+                            process => process.EndTime,
+                            expiredStop.PendingEndTime)
+                        .SetProperty(
+                            process => process.PendingEndTime,
+                            (DateTime?)null));
+            }
+
+            return finalizedCount;
         }
 
         public async Task<DateOnly?> PrepareDailyCutoverAsync(
