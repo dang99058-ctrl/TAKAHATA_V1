@@ -8,7 +8,6 @@ import {
   Form,
   Input,
   InputNumber,
-  Modal,
   Select,
   Space,
   Typography,
@@ -18,15 +17,11 @@ import {
   GlobalOutlined,
   ReadOutlined,
   SaveOutlined,
-  StopOutlined,
-  ThunderboltOutlined,
   WifiOutlined,
 } from "@ant-design/icons";
 import { toast } from "react-toastify";
-import dayjs from "dayjs";
 import { ApiError } from "@/app/types/common/ApiError";
 import {
-  clearPendingDailyCutoverAsync,
   getSettingsAsync,
   testConnectionAsync,
   readMachineBitsAsync,
@@ -57,10 +52,6 @@ type ReadFormValues = {
   processStatus?: number;
 };
 
-interface PendingCutoverFormValues {
-  machineId: number;
-}
-
 interface Props {
   active: boolean;
 }
@@ -84,8 +75,6 @@ export default function SettingsTab({ active }: Props) {
 
   const [loadingMachines, setLoadingMachines] = useState(false);
   const [machineSource, setMachineSource] = useState<Machine[]>([]);
-  const [clearingPendingCutover, setClearingPendingCutover] = useState(false);
-  const [pendingCutoverForm] = Form.useForm<PendingCutoverFormValues>();
   const [selectedWriteMachine, setSelectedWriteMachine] =
     useState<Machine | null>(null);
   const [selectedReadMachine, setSelectedReadMachine] =
@@ -183,58 +172,6 @@ export default function SettingsTab({ active }: Props) {
     } finally {
       setTestingConnection(false);
     }
-  };
-
-  const handleClearPendingCutover = async () => {
-    let machineId: number;
-    try {
-      const values = await pendingCutoverForm.validateFields(["machineId"]);
-      machineId = values.machineId;
-    } catch {
-      return;
-    }
-
-    const selectedMachine = machineSource.find(
-      (machine) => machine.id === machineId,
-    );
-
-    Modal.confirm({
-      title: "Gỡ yêu cầu chốt ngày đang chờ?",
-      content: (
-        <span>
-          Chỉ tiếp tục nếu đã xác nhận PLC sẽ <strong>không còn gửi phản hồi
-          status=8 cũ</strong>. Nếu phản hồi cũ đến sau khi xóa trạng thái chờ,
-          hệ thống có thể gán nó nhầm cho lần chốt ngày tiếp theo. Máy:{" "}
-          <strong>
-            {selectedMachine
-              ? `${selectedMachine.name} - ${selectedMachine.code}`
-              : machineId}
-          </strong>
-          .
-        </span>
-      ),
-      okText: "Đã xác nhận, gỡ trạng thái chờ",
-      cancelText: "Hủy",
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        setClearingPendingCutover(true);
-        try {
-          const result = await clearPendingDailyCutoverAsync(machineId);
-          toast.success(
-            `Đã gỡ trạng thái chờ chốt ngày ${dayjs(result.reportDate).format("DD/MM/YYYY")}.`,
-          );
-        } catch (error) {
-          console.error("Gỡ trạng thái chờ chốt ngày thất bại:", error);
-          if (error instanceof ApiError) {
-            toast.error(error.getDisplayMessage());
-          } else {
-            toast.error("Gỡ trạng thái chờ chốt ngày thất bại.");
-          }
-        } finally {
-          setClearingPendingCutover(false);
-        }
-      },
-    });
   };
 
   const handleWriteMachineChange = (machineId?: number) => {
@@ -449,71 +386,6 @@ export default function SettingsTab({ active }: Props) {
               </Button>
             </div>
           </Form>
-
-          <Card className="mt-4" title="Gỡ trạng thái chờ PLC">
-            <Typography.Paragraph type="secondary">
-              Chỉ dùng khi đã xác nhận PLC không còn phản hồi status=8 cũ đang
-              chờ xử lý.
-            </Typography.Paragraph>
-            <Form<PendingCutoverFormValues>
-              form={pendingCutoverForm}
-              layout="vertical"
-            >
-              <div className="row align-items-end">
-                <div className="col-12 col-md-8">
-                  <Form.Item
-                    label="Máy"
-                    name="machineId"
-                    rules={[{ required: true, message: "Vui lòng chọn máy" }]}
-                  >
-                    <Select
-                      showSearch={{
-                        filterOption: (input, option) =>
-                          String(option?.label ?? "")
-                            .toLocaleLowerCase()
-                            .includes(input.trim().toLocaleLowerCase()),
-                      }}
-                      loading={loadingMachines}
-                      placeholder="Chọn máy"
-                      disabled={clearingPendingCutover}
-                      options={machineSource.map((machine) => ({
-                        value: machine.id,
-                        label: `${machine.name} - ${machine.code}`,
-                      }))}
-                    />
-                  </Form.Item>
-                </div>
-                <div className="col-12 col-md-4">
-                  <Button
-                    danger
-                    icon={<StopOutlined />}
-                    loading={clearingPendingCutover}
-                    disabled={loadingMachines}
-                    onClick={() => void handleClearPendingCutover()}
-                    block
-                  >
-                    Gỡ trạng thái chờ PLC
-                  </Button>
-                </div>
-              </div>
-            </Form>
-          </Card>
-
-          <Card
-            className="mt-4"
-            title={
-              <Space>
-                <ThunderboltOutlined />
-                Gia hạn kế hoạch tự động
-              </Space>
-            }
-          >
-            <Typography.Paragraph type="secondary">
-              Hệ thống tự động gia hạn kế hoạch đủ điều kiện sang ngày hiện tại
-              lúc 1:00 hằng ngày (giờ Việt Nam). Việc chốt thời gian PLC vẫn
-              được thực hiện theo lịch riêng lúc 0:00.
-            </Typography.Paragraph>
-          </Card>
 
           <div className="mt-4">
             <div className="row g-3">

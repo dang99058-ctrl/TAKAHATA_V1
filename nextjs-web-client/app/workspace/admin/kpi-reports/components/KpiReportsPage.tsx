@@ -80,6 +80,65 @@ const CHART_COLORS = [
   "#00BCD4",
 ] as const;
 
+const MACHINE_CHART_COLORS: Record<string, string> = {
+  "1": "#E4572E",
+  "2": "#17A398",
+  "3": "#FFC914",
+  "5": "#5C4D7D",
+  "19": "#76B041",
+  "20": "#4D9DE0",
+  "22": "#C1292E",
+  "23": "#00A6A6",
+  "24": "#F18F01",
+  "25": "#6A4C93",
+  "28": "#2E86AB",
+  "38": "#A23B72",
+  "41": "#3B8C6E",
+  "42": "#D1495B",
+  "46": "#386641",
+  "55": "#7B2CBF",
+  "58": "#BC6C25",
+  "59": "#0077B6",
+  "60": "#8A5A44",
+  "61": "#5F0F40",
+};
+
+const getMachineChartColors = (machineCodes: string[]) => {
+  const colors: Record<string, string> = {};
+  const usedColors = new Set<string>();
+
+  for (const code of machineCodes) {
+    const color = MACHINE_CHART_COLORS[code];
+    if (color) {
+      colors[code] = color;
+      usedColors.add(color);
+    }
+  }
+
+  const unknownCodes = [...new Set(machineCodes)]
+    .filter((code) => !colors[code])
+    .sort();
+
+  for (const code of unknownCodes) {
+    let hash = 0;
+    for (const character of code) {
+      hash = (hash * 31 + character.charCodeAt(0)) | 0;
+    }
+
+    let hue = ((hash % 360) + 360) % 360;
+    let color = `hsl(${hue.toFixed(3)} 68% 48%)`;
+    while (usedColors.has(color)) {
+      hue = (hue + 137.508) % 360;
+      color = `hsl(${hue.toFixed(3)} 68% 48%)`;
+    }
+
+    colors[code] = color;
+    usedColors.add(color);
+  }
+
+  return colors;
+};
+
 const CARD_STYLE = {
   border: "1px solid #e5e7eb",
   boxShadow:
@@ -162,18 +221,55 @@ export function KpiReportsPage() {
   const [searchPartOfProcessKeyword, setSearchPartOfProcessKeyword] =
     useState("");
 
-  const chartData = useMemo(
-    () =>
-      machinesKPI.map((machine) => {
-        return {
-          name: `${machine.code || machine.name || "Máy"} - ${dayjs(
-            machine.reportDate,
-          ).format("DD/MM/YYYY")}`,
-          utilization: Number(machine.utilizationRate.toFixed(1)),
-        };
-      }),
-    [machinesKPI],
-  );
+  const chartData = useMemo(() => {
+    const [from, to] = machineDateRange ?? [];
+    const selectedDayCount =
+      from && to
+        ? to.startOf("day").diff(from.startOf("day"), "day") + 1
+        : new Set(machinesKPI.map((machine) => machine.reportDate)).size;
+    const groupedMachines = new Map<
+      string,
+      {
+        code: string;
+        name: string;
+        workingTime: number;
+      }
+    >();
+
+    for (const machine of machinesKPI) {
+      const key = machine.code || machine.name;
+      const current = groupedMachines.get(key);
+      if (current) {
+        current.workingTime += machine.workingTime ?? 0;
+      } else {
+        groupedMachines.set(key, {
+          code: machine.code,
+          name: machine.name,
+          workingTime: machine.workingTime ?? 0,
+        });
+      }
+    }
+
+    const availableHours = selectedDayCount * WORKING_HOURS_PER_DAY;
+    const machineColors = getMachineChartColors([
+      ...groupedMachines.keys(),
+    ]);
+
+    return Array.from(groupedMachines.entries())
+      .map(([key, machine]) => ({
+        name: machine.code || machine.name || "Máy",
+        machineName: machine.name,
+        workingTime: machine.workingTime,
+        utilization:
+          availableHours > 0
+            ? Number(
+                ((machine.workingTime / availableHours) * 100).toFixed(1),
+              )
+            : 0,
+        color: machineColors[key],
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }, [machineDateRange, machinesKPI]);
 
   const fetchMachinesReport = useCallback(
     async (range: DateRange = machineDateRange) => {
@@ -760,17 +856,42 @@ export function KpiReportsPage() {
                   <ResponsiveContainer width="100%" height={320}>
                     <BarChart
                       data={chartData}
-                      margin={{ top: 10, right: 20, left: 0, bottom: 10 }}
+                      margin={{ top: 10, right: 20, left: 20, bottom: 28 }}
                     >
                       <CartesianGrid strokeDasharray="3 3" vertical={false} />
                       <XAxis
                         dataKey="name"
-                        tick={false}
                         axisLine={false}
                         tickLine={false}
+                        interval={0}
+                        tick={{ fontSize: 11 }}
+                        label={{
+                          value: "Máy",
+                          position: "insideBottom",
+                          offset: -18,
+                        }}
                       />
-                      <YAxis unit="%" />
+                      <YAxis
+                        domain={[0, 100]}
+                        ticks={[0, 20, 40, 60, 80, 100]}
+                        unit="%"
+                        allowDataOverflow
+                        label={{
+                          value: "Hiệu suất sử dụng (%)",
+                          angle: -90,
+                          position: "insideLeft",
+                          style: { textAnchor: "middle" },
+                        }}
+                      />
                       <Tooltip
+                        labelFormatter={(label) => {
+                          const machine = chartData.find(
+                            (item) => item.name === label,
+                          );
+                          return machine
+                            ? `${machine.name} - ${machine.machineName} · ${machine.workingTime.toFixed(2)} giờ chạy`
+                            : String(label ?? "");
+                        }}
                         formatter={(value) => {
                           const rawValue = Array.isArray(value)
                             ? value[0]
@@ -785,17 +906,17 @@ export function KpiReportsPage() {
                       />
                       <Bar
                         dataKey="utilization"
-                        shape={(props: RectangleProps & { index?: number }) => {
-                          const index = props.index ?? 0;
-
-                          return (
+                        shape={(
+                          props: RectangleProps & {
+                            payload?: { color: string };
+                          },
+                        ) => (
                             <Rectangle
                               {...props}
-                              fill={CHART_COLORS[index % CHART_COLORS.length]}
+                              fill={props.payload?.color ?? CHART_COLORS[0]}
                               radius={[8, 8, 0, 0]}
                             />
-                          );
-                        }}
+                          )}
                       />
                     </BarChart>
                   </ResponsiveContainer>

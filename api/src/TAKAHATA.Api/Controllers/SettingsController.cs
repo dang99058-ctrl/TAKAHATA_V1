@@ -1,7 +1,6 @@
-﻿using MediatR;
+using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using TAKAHATA.Application.Common.Interface.Repositories;
 using TAKAHATA.Application.Common.Interface.Services;
 using TAKAHATA.Application.Settings.Commands;
 using TAKAHATA.Domain.Common.Constant;
@@ -14,18 +13,15 @@ namespace TAKAHATA.Api.Controllers
         private readonly ISender _sender;
         private readonly IPLCService _pLCService;
         private readonly IPLCSettingsService _pLCSettingsService;
-        private readonly IUnitOfWorkRepository _unitOfWorkRepository;
 
         public SettingsController(
             ISender sender,
             IPLCSettingsService pLCSettingsService,
-            IPLCService pLCService,
-            IUnitOfWorkRepository unitOfWorkRepository)
+            IPLCService pLCService)
         {
             _sender = sender;
             _pLCSettingsService = pLCSettingsService;
             _pLCService = pLCService;
-            _unitOfWorkRepository = unitOfWorkRepository;
         }
 
         [HttpPost("update")]
@@ -79,29 +75,5 @@ namespace TAKAHATA.Api.Controllers
                 e => Problem(e));
         }
 
-        [HttpPost("clear-pending-daily-cutover")]
-        public async Task<IActionResult> ClearPendingDailyCutover(
-            ClearPendingDailyCutoverRequest request)
-        {
-            var reportDate = await _unitOfWorkRepository.ClearPendingDailyCutoverAsync(
-                request.MachineId);
-            if (!reportDate.HasValue)
-            {
-                return NotFound(new ProblemDetails
-                {
-                    Status = StatusCodes.Status404NotFound,
-                    Title = "Không có yêu cầu chốt ngày đang chờ",
-                    Detail = $"Máy Id={request.MachineId} hiện không có phản hồi chốt ngày đang chờ."
-                });
-            }
-
-            return Ok(new
-            {
-                request.MachineId,
-                ReportDate = reportDate.Value
-            });
-        }
-
     }
-    public sealed record ClearPendingDailyCutoverRequest(int MachineId);
 }

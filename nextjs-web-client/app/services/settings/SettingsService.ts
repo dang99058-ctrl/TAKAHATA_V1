@@ -37,18 +37,3 @@ export const readMachineBitsAsync = async (
   );
   return response.data;
 };
-
-export interface ClearPendingDailyCutoverResponse {
-  machineId: number;
-  reportDate: string;
-}
-
-export const clearPendingDailyCutoverAsync = async (
-  machineId: number,
-): Promise<ClearPendingDailyCutoverResponse> => {
-  const response = await apiClient.post<ClearPendingDailyCutoverResponse>(
-    "/Settings/clear-pending-daily-cutover",
-    { machineId },
-  );
-  return response.data;
-};

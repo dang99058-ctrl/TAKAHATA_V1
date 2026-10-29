@@ -155,35 +155,6 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
             await _dbContext.SaveChangesAsync();
         }
 
-        public async Task<DateOnly?> ClearPendingDailyCutoverAsync(int machineId)
-        {
-            var pendingSummary = await _dbContext.MachineDailyTimeSummaries
-                .Where(summary =>
-                    summary.MachineId == machineId &&
-                    summary.PendingFinalPackets > 0)
-                .OrderBy(summary => summary.ReportDate)
-                .FirstOrDefaultAsync();
-
-            if (pendingSummary == null)
-                return null;
-
-            pendingSummary.PendingFinalPackets = 0;
-            pendingSummary.CutoverCommandSent = false;
-            pendingSummary.WasRunningAtCutover = null;
-            pendingSummary.FirstRunningAt = null;
-
-            await _dbContext.SaveChangesAsync();
-
-            _logger.LogWarning(
-                "Đã gỡ trạng thái chờ phản hồi chốt ngày theo yêu cầu admin. " +
-                "MachineId={MachineId}, ReportDate={ReportDate}. " +
-                "Chỉ thực hiện sau khi xác nhận PLC không còn gửi phản hồi cũ.",
-                machineId,
-                pendingSummary.ReportDate);
-
-            return pendingSummary.ReportDate;
-        }
-
         public async Task UpdateDataAsync(
             int statusBitAddress,
             int status,
