@@ -31,6 +31,7 @@ import {
   getSettingsAsync,
   testConnectionAsync,
   testDailyCutoverAsync,
+  testDailyExtensionAsync,
   readMachineBitsAsync,
   updateSettingsAsync,
   writeMachineBitsAsync,
@@ -64,6 +65,10 @@ interface TestCutoverFormValues {
   machineId: number;
 }
 
+interface TestExtensionFormValues {
+  targetDate: Dayjs;
+}
+
 interface Props {
   active: boolean;
 }
@@ -88,8 +93,10 @@ export default function SettingsTab({ active }: Props) {
   const [loadingMachines, setLoadingMachines] = useState(false);
   const [machineSource, setMachineSource] = useState<Machine[]>([]);
   const [testingDailyCutover, setTestingDailyCutover] = useState(false);
+  const [testingDailyExtension, setTestingDailyExtension] = useState(false);
   const [clearingPendingCutover, setClearingPendingCutover] = useState(false);
   const [cutoverForm] = Form.useForm<TestCutoverFormValues>();
+  const [extensionForm] = Form.useForm<TestExtensionFormValues>();
   const [selectedWriteMachine, setSelectedWriteMachine] =
     useState<Machine | null>(null);
   const [selectedReadMachine, setSelectedReadMachine] =
@@ -230,6 +237,47 @@ export default function SettingsTab({ active }: Props) {
           }
         } finally {
           setTestingDailyCutover(false);
+        }
+      },
+    });
+  };
+
+  const handleSubmitDailyExtensionTest = (
+    values: TestExtensionFormValues,
+  ) => {
+    const targetDate = values.targetDate.format("YYYY-MM-DD");
+    const previousDate = values.targetDate.subtract(1, "day").format("DD/MM/YYYY");
+    const targetDateLabel = values.targetDate.format("DD/MM/YYYY");
+
+    Modal.confirm({
+      title: "Xác nhận chạy thử gia hạn kế hoạch",
+      content: (
+        <span>
+          Chạy logic gia hạn như job 1:00 để chuyển các kế hoạch đủ điều kiện
+          từ ngày trước đó ({previousDate}) sang ngày {targetDateLabel} trên{" "}
+          <strong>tất cả máy</strong>. Thao tác có thể thay đổi dữ liệu kế
+          hoạch.
+        </span>
+      ),
+      okText: "Chạy gia hạn",
+      cancelText: "Hủy",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setTestingDailyExtension(true);
+        try {
+          await testDailyExtensionAsync(targetDate);
+          toast.success(
+            `Đã chạy logic gia hạn kế hoạch sang ngày ${targetDateLabel}.`,
+          );
+        } catch (error) {
+          console.error("Chạy thử gia hạn kế hoạch thất bại:", error);
+          if (error instanceof ApiError) {
+            toast.error(error.getDisplayMessage());
+          } else {
+            toast.error("Chạy thử gia hạn kế hoạch thất bại.");
+          }
+        } finally {
+          setTestingDailyExtension(false);
         }
       },
     });
@@ -583,6 +631,63 @@ export default function SettingsTab({ active }: Props) {
                   >
                     Gỡ trạng thái chờ PLC (chỉ khi đã xác nhận không còn phản hồi cũ)
                   </Button>
+                </div>
+              </div>
+            </Form>
+          </Card>
+
+          <Card
+            className="mt-4"
+            title={
+              <Space>
+                <ThunderboltOutlined />
+                Kiểm thử gia hạn kế hoạch lúc 1:00
+              </Space>
+            }
+          >
+            <Typography.Paragraph type="secondary">
+              Chọn ngày muốn gia hạn sang. Chức năng áp dụng logic của job 1:00
+              cho tất cả máy; ngày trước đó là ngày nguồn.
+            </Typography.Paragraph>
+            <Form<TestExtensionFormValues>
+              form={extensionForm}
+              layout="vertical"
+              onFinish={handleSubmitDailyExtensionTest}
+            >
+              <div className="row">
+                <div className="col-12 col-md-8">
+                  <Form.Item
+                    label="Ngày muốn gia hạn sang"
+                    name="targetDate"
+                    rules={[
+                      {
+                        required: true,
+                        message: "Vui lòng chọn ngày muốn gia hạn sang",
+                      },
+                    ]}
+                  >
+                    <DatePicker
+                      className="w-100"
+                      format="DD/MM/YYYY"
+                      placeholder="Chọn ngày"
+                      disabled={testingDailyExtension}
+                    />
+                  </Form.Item>
+                </div>
+                <div className="col-12 col-md-4 d-flex align-items-end">
+                  <Form.Item className="w-100">
+                    <Button
+                      type="primary"
+                      danger
+                      htmlType="submit"
+                      icon={<ThunderboltOutlined />}
+                      loading={testingDailyExtension}
+                      disabled={testingDailyCutover}
+                      block
+                    >
+                      Trigger test
+                    </Button>
+                  </Form.Item>
                 </div>
               </div>
             </Form>

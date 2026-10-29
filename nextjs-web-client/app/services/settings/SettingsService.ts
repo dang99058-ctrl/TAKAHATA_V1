@@ -54,6 +54,21 @@ export const testDailyCutoverAsync = async (
   return response.data;
 };
 
+export interface TestDailyExtensionResponse {
+  targetDate: string;
+  previousDate: string;
+}
+
+export const testDailyExtensionAsync = async (
+  targetDate: string,
+): Promise<TestDailyExtensionResponse> => {
+  const response = await apiClient.post<TestDailyExtensionResponse>(
+    "/Settings/test-daily-extension",
+    { targetDate },
+  );
+  return response.data;
+};
+
 export interface ClearPendingDailyCutoverResponse {
   machineId: number;
   reportDate: string;

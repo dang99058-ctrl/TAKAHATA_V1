@@ -72,6 +72,7 @@ namespace TAKAHATA.Application.Manufacturing.Commands
 
                     partProcess.Status = ProcessStatus.InProgress;
                     partProcess.EndTime = null;
+                    partProcess.PendingEndTime = null;
 
                     if (partProcess.StartTime == null)
                         partProcess.StartTime = DateTime.Now;

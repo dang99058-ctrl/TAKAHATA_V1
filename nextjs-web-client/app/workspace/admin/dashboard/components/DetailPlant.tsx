@@ -1,8 +1,9 @@
 import { getPartProcessByMachineAsync } from "@/app/services/machine/MachineService";
 import { ManufacturingProcess } from "@/app/types";
 import { ProcessStatus } from "@/app/types/common/ProcessStatus";
+import { getDisplayProcessEndTime } from "@/app/utilities/ProcessTime";
 import { getStatusTag } from "@/app/utilities/UtilityState";
-import { Modal, Table, Tag } from "antd";
+import { Modal, Table } from "antd";
 import { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -100,8 +101,18 @@ export default function DetailPlant({
         title: "Kết thúc",
         dataIndex: "endTime",
         width: 150,
-        render: (value) =>
-          value ? dayjs(value).format("DD/MM/YYYY HH:mm:ss") : "-",
+        render: (
+          value: ManufacturingProcess["endTime"],
+          process: ManufacturingProcess,
+        ) => {
+          const displayEndTime = getDisplayProcessEndTime(
+            value,
+            process.isCutoverCompleted,
+          );
+          return displayEndTime
+            ? displayEndTime.format("DD/MM/YYYY HH:mm:ss")
+            : "-";
+        },
       },
       {
         title: "Dự kiến (giờ)",

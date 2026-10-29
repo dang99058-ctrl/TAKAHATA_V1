@@ -11,9 +11,17 @@ namespace TAKAHATA.Application.Common.Interface.Repositories
 
         Task<int> GetProcessedQuantityByReferenceId(int? referenceId);
         Task<bool> IsCutoverLockedAsync(int processId);
+        Task<List<PartProcess>> GetInProgressProcessesByMachineIdsAsync(
+            List<int> machineIds,
+            DateOnly plantDate);
         Task<List<PartProcess>> GetRelatedProcessesAsync(HashSet<int> processIds);
         Task HandleExtend();
-        Task RemoveEquivalent(PartProcess partProcess, int indexId);
+        Task HandleExtend(DateOnly targetDate);
+        Task RemoveEquivalent(
+            PartProcess partProcess,
+            string partCode,
+            int indexId,
+            DateOnly? effectiveDate = null);
         Task<SearchResponse<List<ManufacturingProcessResponse>>> SearchByMachineIdAsync(
             int machineId,
             int? page,

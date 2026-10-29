@@ -244,7 +244,7 @@ namespace TAKAHATA.Application.Services
                             worksheet.Cell(row, 9).Value = "-";
 
                         worksheet.Range(row, 8, row, 9)
-                            .Style.DateFormat.Format = "hh:mm";
+                            .Style.DateFormat.Format = "hh:mm:ss";
 
                         // J: Tổng thời gian.
                         if (item.TotalTime.HasValue)

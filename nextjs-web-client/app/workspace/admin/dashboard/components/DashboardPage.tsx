@@ -17,74 +17,58 @@ export const statusConfig: Record<
   MachineStatus,
   {
     text: string;
-    badge: string;
-    border: string;
-    bg: string;
-    textColor: string;
+    color: string;
+    foreground: string;
     icon: string;
   }
 > = {
   [MachineStatus.None]: {
     text: "NONE",
-    badge: "bg-dark text-white",
-    border: "border-dark",
-    bg: "bg-secondary",
-    textColor: "text-white",
+    color: "#6c757d",
+    foreground: "#fff",
     icon: "bi-circle",
   },
 
   [MachineStatus.Running]: {
     text: "RUNNING",
-    badge: "bg-success text-white",
-    border: "border-success",
-    bg: "bg-success",
-    textColor: "text-white",
+    color: "#198754",
+    foreground: "#fff",
     icon: "bi-play-circle-fill",
   },
 
   [MachineStatus.Paused]: {
     text: "PAUSED",
-    badge: "bg-warning text-dark",
-    border: "border-warning",
-    bg: "bg-warning",
-    textColor: "text-dark",
+    color: "#ffd166",
+    foreground: "#212529",
     icon: "bi-pause-circle-fill",
   },
 
   [MachineStatus.Stopped]: {
-    text: "Stopped",
-    badge: "bg-secondary text-white",
-    border: "border-secondary",
-    bg: "bg-secondary",
-    textColor: "text-white",
+    text: "STOPPED",
+    color: "#fd7e14",
+    foreground: "#fff",
     icon: "bi-stop-circle-fill",
   },
 
   [MachineStatus.Alarm]: {
     text: "ALARM",
-    badge: "bg-danger text-white",
-    border: "border-danger",
-    bg: "bg-danger",
-    textColor: "text-white",
+    color: "#dc3545",
+    foreground: "#fff",
     icon: "bi-exclamation-triangle-fill",
   },
 
   [MachineStatus.Maintenance]: {
     text: "MAINTENANCE",
-    badge: "bg-primary text-white",
-    border: "border-primary",
-    bg: "bg-primary",
-    textColor: "text-white",
+    color: "#0d6efd",
+    foreground: "#fff",
     icon: "bi-tools",
   },
 
   [MachineStatus.Idle]: {
     text: "IDLE",
-    badge: "bg-secondary text-white",
-    border: "border-secondary",
-    bg: "bg-secondary",
-    textColor: "text-white",
-    icon: "bi-stop-circle-fill",
+    color: "#ffc107",
+    foreground: "#212529",
+    icon: "bi-record-circle-fill",
   },
 };
 
@@ -294,8 +278,8 @@ function MachineCard({
     transition-all duration-200
     hover:-translate-y-0.5
     hover:shadow-md
-    ${cfg?.border ?? "border-l-slate-400"}
   `}
+      style={{ borderLeftColor: cfg?.color ?? "#94a3b8" }}
       styles={{
         body: {
           padding: 0,
@@ -311,8 +295,8 @@ function MachineCard({
         items-center justify-center
         overflow-hidden
         px-4 py-3
-        ${cfg?.bg ?? "bg-slate-100"}
       `}
+          style={{ backgroundColor: cfg?.color ?? "#f1f5f9" }}
         >
           <div
             className={`
@@ -326,8 +310,11 @@ function MachineCard({
           uppercase tracking-wider
           shadow-sm
           md:text-2xl
-          ${cfg?.badge ?? "bg-slate-700 text-white"}
         `}
+            style={{
+              backgroundColor: cfg?.color ?? "#334155",
+              color: cfg?.foreground ?? "#fff",
+            }}
           >
             <i className={`bi ${cfg?.icon ?? "bi-circle"} me-2`} />
 

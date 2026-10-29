@@ -21,7 +21,7 @@ namespace TAKAHATA.Domain.Common.Errors
             public static Error ProcessCutoverLocked =>
                 Error.Conflict(
                     code: "PartProcess.CutoverLocked",
-                    description: "Công đoạn đã được chốt sang ngày kế tiếp nên không thể chỉnh sửa hoặc xóa.");
+                    description: "Công đoạn đã chốt sang ngày kế tiếp nên không thể thực hiện thao tác này.");
 
             public static Error ApproveFalse =>
                 Error.Failure(code: "Part.ApproveFalse", description: "Phê duyệt part không thành công.");

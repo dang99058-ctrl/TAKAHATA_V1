@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.Logging;
 using TAKAHATA.Application.Common.Interface.Repositories;
 using TAKAHATA.Application.Common.Interface.Services;
+using TAKAHATA.Contracts.Common;
 
 namespace TAKAHATA.Application.Services
 {
@@ -28,9 +29,65 @@ namespace TAKAHATA.Application.Services
 
         public async Task ExecuteAsync()
         {
-            _logger.LogInformation("DailyJob bắt đầu lúc {Time}", DateTimeOffset.Now);
-            await _partProcessRepository.HandleExtend();
-            _logger.LogInformation("DailyJob hoàn thành");
+            await ExecuteAsync(VietnamTime.Today);
+        }
+
+        public async Task ExecuteAsync(DateOnly targetDate)
+        {
+            _logger.LogInformation(
+                "DailyJob gia hạn kế hoạch sang ngày {TargetDate}, bắt đầu lúc {Time}",
+                targetDate,
+                DateTimeOffset.Now);
+            await _partProcessRepository.HandleExtend(targetDate);
+
+            var machines = (await _machineRepository.GetAsync())
+                .ToDictionary(machine => machine.Id);
+            var inProgressProcesses = await _partProcessRepository
+                .GetInProgressProcessesByMachineIdsAsync(
+                    machines.Keys.ToList(),
+                    targetDate);
+            var failures = new List<Exception>();
+
+            foreach (var process in inProgressProcesses.Where(process =>
+                process.ReferenceId.HasValue))
+            {
+                if (!machines.TryGetValue(process.MachineId, out var machine) ||
+                    !machine.IsAutomatic ||
+                    machine.PartBitAddress <= 0 ||
+                    machine.PartProcessBitAddress <= 0)
+                {
+                    continue;
+                }
+
+                var result = await _plcService.WriteMachineIdentifiers(
+                    machine,
+                    process.PartId,
+                    process.Id);
+                if (!result.IsSuccess)
+                {
+                    var error = result.Error ?? new InvalidOperationException(
+                        $"Không thể khôi phục PartId/ProcessId xuống PLC cho máy {machine.Code}.");
+                    _logger.LogError(
+                        error,
+                        "Không ghi được PartId/ProcessId của kế hoạch tiếp nối xuống PLC. " +
+                        "MachineCode={MachineCode}, PartId={PartId}, ProcessId={ProcessId}",
+                        machine.Code,
+                        process.PartId,
+                        process.Id);
+                    failures.Add(error);
+                }
+            }
+
+            if (failures.Count > 0)
+            {
+                throw new AggregateException(
+                    "Không thể ghi PartId/ProcessId của một hoặc nhiều kế hoạch tiếp nối xuống PLC.",
+                    failures);
+            }
+
+            _logger.LogInformation(
+                "DailyJob gia hạn kế hoạch sang ngày {TargetDate} hoàn thành",
+                targetDate);
         }
 
         public async Task SendDailyTimeCutoverCommandAsync()
@@ -58,6 +115,18 @@ namespace TAKAHATA.Application.Services
 
             foreach (var machine in machines)
             {
+                if (!await _unitOfWorkRepository.HasUnendedInProgressProcessAsync(
+                    machine.Id,
+                    reportDate))
+                {
+                    _logger.LogInformation(
+                        "Không gửi lệnh chốt thời gian cho máy {MachineCode}: " +
+                        "không có công đoạn đang thực hiện chưa kết thúc ngày {ReportDate}.",
+                        machine.Code,
+                        reportDate);
+                    continue;
+                }
+
                 if (machine.ProcessStatusBitAddress <= 0)
                 {
                     if (targetMachineId.HasValue)

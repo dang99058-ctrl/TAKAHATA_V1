@@ -51,6 +51,7 @@ const { Text } = Typography;
 import "./WorkerPage.css";
 import { ApiError } from "@/app/types/common/ApiError";
 import { getStatusTag } from "@/app/utilities/UtilityState";
+import { getDisplayProcessEndTime } from "@/app/utilities/ProcessTime";
 
 type ProcessingFormValues = {
   startTime: number;
@@ -458,6 +459,32 @@ export default function WorkerPage() {
       ),
     },
     {
+      title: "Bắt đầu",
+      dataIndex: "startTime",
+      width: 160,
+      align: "center",
+      render: (value: ManufacturingProcess["startTime"]) =>
+        value ? dayjs(value).format("DD/MM/YYYY HH:mm:ss") : "-",
+    },
+    {
+      title: "Kết thúc",
+      dataIndex: "endTime",
+      width: 160,
+      align: "center",
+      render: (
+        value: ManufacturingProcess["endTime"],
+        process: ManufacturingProcess,
+      ) => {
+        const displayEndTime = getDisplayProcessEndTime(
+          value,
+          process.isCutoverCompleted,
+        );
+        return displayEndTime
+          ? displayEndTime.format("DD/MM/YYYY HH:mm:ss")
+          : "-";
+      },
+    },
+    {
       title: "Gá đặt (giờ)",
       dataIndex: "setupTime",
       width: 120,
@@ -737,13 +764,6 @@ export default function WorkerPage() {
                               : "Chưa chọn máy"}
                           </Text>
                         </div>
-
-                        {isCutoverLocked && (
-                          <div className="alert alert-warning py-2 px-3 mb-3">
-                            Công đoạn ngày này đã được chốt sang ngày kế tiếp.
-                            Chỉ xem, không thể chỉnh sửa hoặc tiếp tục gia công.
-                          </div>
-                        )}
 
                         <div className="mb-3">
                           <Text type="secondary" className="d-block mb-1">

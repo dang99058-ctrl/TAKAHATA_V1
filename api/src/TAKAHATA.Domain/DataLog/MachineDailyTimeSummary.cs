@@ -12,5 +12,7 @@ namespace TAKAHATA.Domain.DataLog
         public int PendingFinalPackets { get; set; }
         public bool CutoverCommandSent { get; set; }
         public bool ProcessTimesReset { get; set; }
+        public bool? WasRunningAtCutover { get; set; }
+        public DateTime? FirstRunningAt { get; set; }
     }
 }

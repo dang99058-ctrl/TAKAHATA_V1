@@ -139,7 +139,8 @@ namespace TAKAHATA.Application.Manufacturing.Commands
                     partProcess.ProgrammingTime,
                     partProcess.WorkingTime);
 
-                partProcess.EndTime = DateTime.Now;
+                partProcess.PendingEndTime = DateTime.Now;
+                partProcess.EndTime = null;
 
                 // Nếu số lượng > kế hoạch tự động set bằng.
                 partProcess.ProcessedQuantity += request.ProcessedQuantity;

@@ -47,7 +47,15 @@ namespace TAKAHATA.Api.Middleware
 
             context.Response.Body = responseBody;
 
-            await _next(context);
+            try
+            {
+                await _next(context);
+            }
+            catch
+            {
+                context.Response.Body = originalBodyStream;
+                throw;
+            }
 
             responseBody.Seek(0, SeekOrigin.Begin);
 

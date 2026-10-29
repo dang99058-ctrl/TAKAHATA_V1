@@ -167,7 +167,14 @@ namespace TAKAHATA.Application.Manufacturing.Commands
                         partProcess.ProcessedQuantity,
                         part.Quantity);
 
-                    partProcess.EndTime = DateTime.Now;
+                    if (partProcess.EndTime.HasValue)
+                    {
+                        partProcess.PendingEndTime = null;
+                    }
+                    else
+                    {
+                        partProcess.PendingEndTime = DateTime.Now;
+                    }
 
                     // Kiểm tra xem số lượng người dùng gửi có hợp lệ không
                     var processedQuantity =
@@ -207,10 +214,14 @@ namespace TAKAHATA.Application.Manufacturing.Commands
                         var rootProcessId = partProcess.ReferenceId ?? partProcess.Id;
                         var processChain = await _partProcessRepository.GetRelatedProcessesAsync(
                             [rootProcessId]);
+
+                        await _partProcessRepository.RemoveEquivalent(
+                            partProcess,
+                            part.Code,
+                            part.IndexId);
+
                         foreach (var relatedProcess in processChain)
                             relatedProcess.Status = ProcessStatus.Completed;
-
-                        await _partProcessRepository.RemoveEquivalent(partProcess, part.IndexId);
                     }
                     else
                         partProcess.Status = ProcessStatus.PartiallyCompleted;

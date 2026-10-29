@@ -131,6 +131,7 @@ namespace TAKAHATA.Infrastructure
                 options.WorkerCount = 1;
             });
 
+            services.AddHostedService<ProcessStopFinalizerBackgroundService>();
             services.AddTransient<DailyJob>();
 
             return services;

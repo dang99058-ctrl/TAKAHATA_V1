@@ -105,7 +105,7 @@ export function MachineScheduleBoard({ active }: Props) {
     }
 
     setSelectedPartId(process.partId);
-    setSelectedPartReadOnly(process.isCutoverCompleted);
+    setSelectedPartReadOnly(false);
     setIsUpdatePartOpen(true);
   };
 
@@ -304,6 +304,7 @@ export function MachineScheduleBoard({ active }: Props) {
                               : undefined
                         }
                         className="m-0"
+                        style={{ color: "#000" }}
                       >
                         {process.isCutoverCompleted
                           ? "Đã chốt ngày"
@@ -320,8 +321,7 @@ export function MachineScheduleBoard({ active }: Props) {
                         type="text"
                         size="small"
                         icon={
-                          !isMaintenance &&
-                          (process.isClosed || process.isCutoverCompleted) ? (
+                          !isMaintenance && process.isClosed ? (
                             <EyeOutlined />
                           ) : (
                             <EditOutlined />
@@ -335,8 +335,7 @@ export function MachineScheduleBoard({ active }: Props) {
                               : "Sửa thông tin sản xuất"
                         }
                         title={
-                          !isMaintenance &&
-                          (process.isClosed || process.isCutoverCompleted)
+                          !isMaintenance && process.isClosed
                             ? "Xem"
                             : "Sửa"
                         }

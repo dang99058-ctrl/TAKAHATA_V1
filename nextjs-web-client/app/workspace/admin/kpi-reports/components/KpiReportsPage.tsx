@@ -69,8 +69,8 @@ import { ProcessStatus } from "@/app/types/common/ProcessStatus";
 const { RangePicker } = DatePicker;
 
 const WORKING_HOURS_PER_DAY = 24;
-const DEFAULT_PAGE_SIZE = 500;
-const DEFAULT_PROCESS_PAGE_SIZE = 500;
+const DEFAULT_PAGE_SIZE = 50;
+const DEFAULT_PROCESS_PAGE_SIZE = 50;
 const CHART_COLORS = [
   "#4CAF50",
   "#2196F3",
@@ -600,7 +600,7 @@ export function KpiReportsPage() {
           key: "startTime",
           render: (date) =>
             date && dayjs(date).isValid()
-              ? dayjs(date).format("DD/MM/YYYY HH:mm")
+              ? dayjs(date).format("DD/MM/YYYY HH:mm:ss")
               : "-",
         },
         {
@@ -610,7 +610,7 @@ export function KpiReportsPage() {
           key: "endTime",
           render: (date) =>
             date && dayjs(date).isValid()
-              ? dayjs(date).format("DD/MM/YYYY HH:mm")
+              ? dayjs(date).format("DD/MM/YYYY HH:mm:ss")
               : "-",
         },
       ],
@@ -699,19 +699,39 @@ export function KpiReportsPage() {
       align: "right",
       render: (_, record) => {
         let totalHours = 0;
+        const workingTime = record.workingTime ?? 0;
 
         if (record.startTime && record.endTime) {
           const start = dayjs(record.startTime);
           const end = dayjs(record.endTime);
 
           if (start.isValid() && end.isValid()) {
-            // true: giữ phần giờ lẻ, tương đương C# TotalHours.
-            totalHours = Math.max(end.diff(start, "hour", true), 0);
+            if (record.reportDate) {
+              const reportDay = dayjs(record.reportDate).startOf("day");
+              const nextDay = reportDay.add(1, "day");
+              const intervalStart = start.isAfter(reportDay)
+                ? start
+                : reportDay;
+              const intervalEnd = end.isBefore(nextDay) ? end : nextDay;
+
+              if (intervalEnd.isAfter(intervalStart)) {
+                totalHours = intervalEnd.diff(intervalStart, "hour", true);
+              }
+            } else if (end.isAfter(start)) {
+              totalHours = end.diff(start, "hour", true);
+            }
           }
         }
 
+        if (totalHours === 0) {
+          totalHours =
+            workingTime +
+            (record.setupTime ?? 0) +
+            (record.waitingTime ?? 0);
+        }
+
         const efficiency =
-          totalHours > 0 ? (record.workingTime ?? 0) / totalHours : 0;
+          totalHours > 0 ? workingTime / totalHours : 0;
 
         return `${(efficiency * 100).toFixed(2)}%`;
       },

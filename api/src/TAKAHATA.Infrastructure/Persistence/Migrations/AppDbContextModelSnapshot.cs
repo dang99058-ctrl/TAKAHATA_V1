@@ -154,6 +154,112 @@ namespace TAKAHATA.Infrastructure.Persistence.Migrations
                     b.ToTable("AspNetUserTokens", (string)null);
                 });
 
+            modelBuilder.Entity("TAKAHATA.Domain.DataLog.MachineDailyTimeSummary", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreateAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("CreateBy")
+                        .IsRequired()
+                        .HasColumnType("longtext");
+
+                    b.Property<bool>("CutoverCommandSent")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<DateTime?>("FirstRunningAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<int>("MachineId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("PendingFinalPackets")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("ProcessTimesReset")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<DateOnly>("ReportDate")
+                        .HasColumnType("date");
+
+                    b.Property<double>("SetupTime")
+                        .HasColumnType("double");
+
+                    b.Property<DateTime?>("UpdateAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("UpdateBy")
+                        .HasColumnType("longtext");
+
+                    b.Property<double>("WaitingTime")
+                        .HasColumnType("double");
+
+                    b.Property<bool?>("WasRunningAtCutover")
+                        .HasColumnType("tinyint(1)");
+
+                    b.Property<double>("WorkingTime")
+                        .HasColumnType("double");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MachineId", "ReportDate")
+                        .IsUnique();
+
+                    b.ToTable("MachineDailyTimeSummaries");
+                });
+
+            modelBuilder.Entity("TAKAHATA.Domain.DataLog.PartProcessDailyTimeSummary", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreateAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("CreateBy")
+                        .IsRequired()
+                        .HasColumnType("longtext");
+
+                    b.Property<int>("MachineId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("PartProcessId")
+                        .HasColumnType("int");
+
+                    b.Property<DateOnly>("ReportDate")
+                        .HasColumnType("date");
+
+                    b.Property<double>("SetupTime")
+                        .HasColumnType("double");
+
+                    b.Property<DateTime?>("UpdateAt")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<string>("UpdateBy")
+                        .HasColumnType("longtext");
+
+                    b.Property<double>("WaitingTime")
+                        .HasColumnType("double");
+
+                    b.Property<double>("WorkingTime")
+                        .HasColumnType("double");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MachineId", "PartProcessId", "ReportDate")
+                        .IsUnique();
+
+                    b.ToTable("PartProcessDailyTimeSummaries");
+                });
+
             modelBuilder.Entity("TAKAHATA.Domain.MasterData.Index", b =>
                 {
                     b.Property<int>("Id")
@@ -325,106 +431,6 @@ namespace TAKAHATA.Infrastructure.Persistence.Migrations
                     b.ToTable("MachineMaintenanceProcesses");
                 });
 
-            modelBuilder.Entity("TAKAHATA.Domain.DataLog.MachineDailyTimeSummary", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<bool>("CutoverCommandSent")
-                        .HasColumnType("tinyint(1)");
-
-                    b.Property<bool>("ProcessTimesReset")
-                        .HasColumnType("tinyint(1)");
-
-                    b.Property<DateTime>("CreateAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<string>("CreateBy")
-                        .IsRequired()
-                        .HasColumnType("longtext");
-
-                    b.Property<int>("MachineId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("PendingFinalPackets")
-                        .HasColumnType("int");
-
-                    b.Property<DateOnly>("ReportDate")
-                        .HasColumnType("date");
-
-                    b.Property<double>("SetupTime")
-                        .HasColumnType("double");
-
-                    b.Property<DateTime?>("UpdateAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<string>("UpdateBy")
-                        .HasColumnType("longtext");
-
-                    b.Property<double>("WaitingTime")
-                        .HasColumnType("double");
-
-                    b.Property<double>("WorkingTime")
-                        .HasColumnType("double");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("MachineId", "ReportDate")
-                        .IsUnique();
-
-                    b.ToTable("MachineDailyTimeSummaries");
-                });
-
-            modelBuilder.Entity("TAKAHATA.Domain.DataLog.PartProcessDailyTimeSummary", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime>("CreateAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<string>("CreateBy")
-                        .IsRequired()
-                        .HasColumnType("longtext");
-
-                    b.Property<int>("MachineId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("PartProcessId")
-                        .HasColumnType("int");
-
-                    b.Property<DateOnly>("ReportDate")
-                        .HasColumnType("date");
-
-                    b.Property<double>("SetupTime")
-                        .HasColumnType("double");
-
-                    b.Property<DateTime?>("UpdateAt")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<string>("UpdateBy")
-                        .HasColumnType("longtext");
-
-                    b.Property<double>("WaitingTime")
-                        .HasColumnType("double");
-
-                    b.Property<double>("WorkingTime")
-                        .HasColumnType("double");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("MachineId", "PartProcessId", "ReportDate")
-                        .IsUnique();
-
-                    b.ToTable("PartProcessDailyTimeSummaries");
-                });
-
             modelBuilder.Entity("TAKAHATA.Domain.MasterData.Part", b =>
                 {
                     b.Property<int>("Id")
@@ -521,6 +527,9 @@ namespace TAKAHATA.Infrastructure.Persistence.Migrations
 
                     b.Property<int>("PartId")
                         .HasColumnType("int");
+
+                    b.Property<DateTime?>("PendingEndTime")
+                        .HasColumnType("datetime(6)");
 
                     b.Property<string>("PerformedBy")
                         .HasColumnType("longtext");

@@ -5,6 +5,7 @@ using TAKAHATA.Application.Services;
 using TAKAHATA.Contracts.Common;
 using TAKAHATA.Contracts.IndexAndPart;
 using TAKAHATA.Contracts.Report;
+using TAKAHATA.Domain.DataLog;
 using TAKAHATA.Domain.MasterData;
 using Index = TAKAHATA.Domain.MasterData.Index;
 
@@ -49,14 +50,51 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
             return affectedRows > 0;
         }
 
-        public async Task HandleExtend()
+        public Task HandleExtend()
         {
-            var today = VietnamTime.Today;
+            return HandleExtend(VietnamTime.Today);
+        }
+
+        public async Task HandleExtend(DateOnly targetDate)
+        {
+            var today = targetDate;
 
             await using var transaction = await _dbContext.Database.BeginTransactionAsync();
 
             try
             {
+                var completedProcesses = await _dbContext.PartProcesses
+                    .Include(process => process.Part)
+                    .Where(process =>
+                        process.PlantDate <= today &&
+                        process.Status == ProcessStatus.Completed &&
+                        process.Part != null &&
+                        !process.Part.IsClosed)
+                    .OrderByDescending(process => process.PlantDate)
+                    .ThenByDescending(process => process.Id)
+                    .ToListAsync();
+
+                var reconciledCompletedRoots = new HashSet<(int MachineId, int RootProcessId)>();
+                foreach (var completedProcess in completedProcesses)
+                {
+                    if (completedProcess.Part == null)
+                        continue;
+
+                    var rootProcessId =
+                        completedProcess.ReferenceId ?? completedProcess.Id;
+                    if (!reconciledCompletedRoots.Add(
+                        (completedProcess.MachineId, rootProcessId)))
+                    {
+                        continue;
+                    }
+
+                    await RemoveEquivalent(
+                        completedProcess,
+                        completedProcess.Part.Code,
+                        completedProcess.Part.IndexId,
+                        today);
+                }
+
                 var partProcesses = await _dbContext.PartProcesses
                     .Where(pp =>
                         pp.Part != null &&
@@ -72,6 +110,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
 
                 if (partProcesses.Count == 0)
                 {
+                    await SaveChangesHandlingConcurrentDeletesAsync();
                     await transaction.CommitAsync();
                     return;
                 }
@@ -82,6 +121,21 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                     var part = partProcess.Part;
                     if (part == null)
                         continue;
+
+                    if (partProcess.Status == ProcessStatus.InProgress &&
+                        (!partProcess.PlantDate.HasValue ||
+                         partProcess.EndTime != partProcess.PlantDate.Value
+                             .AddDays(1)
+                             .ToDateTime(TimeOnly.MinValue)))
+                    {
+                        _logger.LogInformation(
+                            "Không gia hạn công đoạn đang thực hiện trước khi chốt ngày thành công lúc nửa đêm. " +
+                            "ProcessId={ProcessId}, PlantDate={PlantDate}, EndTime={EndTime}",
+                            partProcess.Id,
+                            partProcess.PlantDate,
+                            partProcess.EndTime);
+                        continue;
+                    }
 
                     var rootProcessId = partProcess.ReferenceId ?? partProcess.Id;
                     if (!processedRoots.Add(rootProcessId))
@@ -121,19 +175,6 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                             if (IsSafeToRemoveUnstartedPlan(duplicate))
                                 _dbContext.PartProcesses.Remove(duplicate);
                         }
-                        continue;
-                    }
-
-                    if (partProcess.Status != ProcessStatus.Completed)
-                    {
-                        _logger.LogInformation(
-                            "Không tự chuyển kế hoạch chưa hoàn thành sang ngày hiện tại; " +
-                            "chờ chốt ngày thành công. ProcessId={ProcessId}, " +
-                            "RootProcessId={RootProcessId}, Status={Status}, PlantDate={PlantDate}",
-                            partProcess.Id,
-                            rootProcessId,
-                            partProcess.Status,
-                            partProcess.PlantDate);
                         continue;
                     }
 
@@ -214,7 +255,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                                 IsSettingUp = false
                             };
                             _dbContext.PartProcesses.Add(existingContinuation);
-                            await _dbContext.SaveChangesAsync();
+                            await SaveChangesHandlingConcurrentDeletesAsync();
                         }
 
                         partProcess.EndTime ??= today.ToDateTime(TimeOnly.MinValue);
@@ -252,7 +293,10 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                         var machine = await _dbContext.Machines
                             .FirstOrDefaultAsync(candidate => candidate.Id == partProcess.MachineId);
                         if (machine != null)
+                        {
+                            machine.PartId = partProcess.PartId;
                             machine.PartProcessId = existingContinuation.Id;
+                        }
                     }
                     else if (partProcess.Status == ProcessStatus.Paused ||
                         partProcess.Status == ProcessStatus.PartiallyCompleted)
@@ -381,13 +425,48 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                     }
                 }
 
-                await _dbContext.SaveChangesAsync();
+                await SaveChangesHandlingConcurrentDeletesAsync();
                 await transaction.CommitAsync();
             }
             catch
             {
                 await transaction.RollbackAsync();
                 throw;
+            }
+        }
+
+        private async Task SaveChangesHandlingConcurrentDeletesAsync()
+        {
+            try
+            {
+                await _dbContext.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException exception)
+            {
+                var missingEntries = new List<Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry>();
+                foreach (var entry in exception.Entries)
+                {
+                    if (await entry.GetDatabaseValuesAsync() == null)
+                    {
+                        missingEntries.Add(entry);
+                        continue;
+                    }
+
+                    throw;
+                }
+
+                if (missingEntries.Count == 0)
+                    throw;
+
+                foreach (var entry in missingEntries)
+                {
+                    _logger.LogWarning(
+                        "Bỏ qua thay đổi cho bản ghi {EntityType} đã bị xóa đồng thời trong lúc gia hạn.",
+                        entry.Metadata.ClrType.Name);
+                    entry.State = EntityState.Detached;
+                }
+
+                await _dbContext.SaveChangesAsync();
             }
         }
 
@@ -462,7 +541,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                         : string.Empty,
 
                     StartTime = x.StartTime,
-                    EndTime = x.EndTime,
+                    EndTime = x.EndTime ?? x.PendingEndTime,
                     EstimatedTime = x.EstimatedTime,
                     WorkerNote = x.WorkerNote,
                     WaitingTime = x.WaitingTime,
@@ -511,6 +590,45 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                         (continuation.RootId == rootProcessId ||
                          continuation.ReferenceId == process.Id) &&
                         continuation.PlantDate > selectedDate);
+            }
+
+            var continuationRootIds = data
+                .Where(process => process.ReferenceId.HasValue)
+                .Select(process => process.ReferenceId!.Value)
+                .Distinct()
+                .ToList();
+            if (continuationRootIds.Count > 0)
+            {
+                var cutoverAt = selectedDate.ToDateTime(TimeOnly.MinValue);
+                var cutoverRoots = await _dbContext.PartProcesses
+                    .Where(process =>
+                        process.MachineId == machineId &&
+                        process.EndTime == cutoverAt &&
+                        (continuationRootIds.Contains(process.Id) ||
+                         (process.ReferenceId.HasValue &&
+                          continuationRootIds.Contains(process.ReferenceId.Value))))
+                    .Select(process => process.ReferenceId ?? process.Id)
+                    .Distinct()
+                    .ToListAsync();
+
+                if (cutoverRoots.Count > 0)
+                {
+                    var cutoverSummary = await _dbContext.MachineDailyTimeSummaries
+                        .AsNoTracking()
+                        .FirstOrDefaultAsync(summary =>
+                            summary.MachineId == machineId &&
+                            summary.ReportDate == selectedDate.AddDays(-1));
+
+                    foreach (var process in data.Where(process =>
+                        process.ReferenceId.HasValue &&
+                        cutoverRoots.Contains(process.ReferenceId.Value) &&
+                        !process.StartTime.HasValue))
+                    {
+                        process.StartTime = GetCutoverContinuationStartTime(
+                            selectedDate,
+                            cutoverSummary);
+                    }
+                }
             }
 
             var cutoverProcessIds = data
@@ -671,7 +789,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                     ReferenceId = pp.ReferenceId,
                     PlantDate = pp.PlantDate,
                     StartTime = pp.StartTime,
-                    EndTime = pp.EndTime,
+                    EndTime = pp.EndTime ?? pp.PendingEndTime,
                     Status = pp.Status,
                     SetupTime = pp.SetupTime,
                     WaitingTime = pp.WaitingTime,
@@ -696,6 +814,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
             var machines = await _dbContext.Machines
                 .Where(m => machineIds.Contains(m.Id))
                 .ToListAsync();
+            var machinesById = machines.ToDictionary(machine => machine.Id);
 
             // Lấy thông tin indexes
             var indexIds = partProcesses
@@ -710,18 +829,17 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                     .Where(p => batch.Contains(p.Id))
                     .ToListAsync());
             }
+            var indexesById = indexes.ToDictionary(index => index.Id);
 
             foreach (var partProcess in partProcesses)
             {
-                var machine = machines.FirstOrDefault(m => m.Id == partProcess.MachineId);
-                if (machine != null)
+                if (machinesById.TryGetValue(partProcess.MachineId, out var machine))
                 {
                     partProcess.MachineName = machine.Name;
                     partProcess.MachineCode = machine.Code;
                 }
 
-                var index = indexes.FirstOrDefault(i => i.Id == partProcess.IndexId);
-                if (index != null)
+                if (indexesById.TryGetValue(partProcess.IndexId, out var index))
                 {
                     partProcess.IndexCode = index.Code;
                 }
@@ -729,6 +847,48 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
 
             if (partProcesses.Count == 0)
                 return [];
+
+            var cutoverContinuations = partProcesses
+                .Where(continuation =>
+                    continuation.ReferenceId.HasValue &&
+                    continuation.PlantDate.HasValue &&
+                    !continuation.StartTime.HasValue)
+                .ToList();
+            var continuationReferenceIds = cutoverContinuations
+                .Select(continuation => continuation.ReferenceId!.Value)
+                .Distinct()
+                .ToList();
+            var potentialCutoverSources = await _dbContext.PartProcesses
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(source =>
+                    continuationReferenceIds.Contains(source.Id) ||
+                    (source.ReferenceId.HasValue &&
+                     continuationReferenceIds.Contains(source.ReferenceId.Value)))
+                .Select(source => new
+                {
+                    source.Id,
+                    source.MachineId,
+                    source.ReferenceId,
+                    source.EndTime
+                })
+                .ToListAsync();
+            var cutoverSourceMatches = new HashSet<(int MachineId, int ProcessId, DateTime? EndTime)>();
+            foreach (var source in potentialCutoverSources)
+            {
+                cutoverSourceMatches.Add((source.MachineId, source.Id, source.EndTime));
+                if (source.ReferenceId.HasValue)
+                    cutoverSourceMatches.Add((source.MachineId, source.ReferenceId.Value, source.EndTime));
+            }
+
+            var cutoverContinuationIds = cutoverContinuations
+                .Where(continuation =>
+                    cutoverSourceMatches.Contains((
+                        continuation.MachineId,
+                        continuation.ReferenceId!.Value,
+                        continuation.PlantDate!.Value.ToDateTime(TimeOnly.MinValue))))
+                .Select(continuation => continuation.PartProcessId)
+                .ToHashSet();
 
             var fromDate = DateOnly.FromDateTime(reportStart);
             var toDate = DateOnly.FromDateTime(to.Date);
@@ -746,6 +906,14 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 .Select(process => process.ReferenceId!.Value)
                 .Distinct()
                 .ToHashSetAsync();
+            var summaryToDate = partProcesses
+                .Where(process =>
+                    !continuationRootIds.Contains(process.PartProcessId) &&
+                    (process.Status is ProcessStatus.Paused or ProcessStatus.PartiallyCompleted) &&
+                    process.EndTime.HasValue)
+                .Select(process => GetLastActiveDate(process.EndTime!.Value))
+                .Append(toDate)
+                .Max();
             var reportMachineIds = partProcesses
                 .Select(process => process.MachineId)
                 .Distinct()
@@ -756,18 +924,30 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                     processSummaryIds.Contains(summary.PartProcessId) &&
                     reportMachineIds.Contains(summary.MachineId) &&
                     summary.ReportDate >= fromDate &&
-                    summary.ReportDate <= toDate)
+                    summary.ReportDate <= summaryToDate)
                 .ToDictionaryAsync(
                     summary => (summary.MachineId, summary.PartProcessId, summary.ReportDate));
+
+            var dailyProcessSummaryTotals = dailyProcessSummaries
+                .GroupBy(summary => (
+                    summary.Key.MachineId,
+                    summary.Key.PartProcessId))
+                .ToDictionary(
+                    group => group.Key,
+                    group => new PartProcessDailyTimeSummary
+                    {
+                        WorkingTime = group.Sum(summary => summary.Value.WorkingTime),
+                        WaitingTime = group.Sum(summary => summary.Value.WaitingTime),
+                        SetupTime = group.Sum(summary => summary.Value.SetupTime)
+                    });
 
             var dailyMachineSummaries = await _dbContext.MachineDailyTimeSummaries
                 .Where(summary =>
                     reportMachineIds.Contains(summary.MachineId) &&
-                    summary.ReportDate >= fromDate &&
+                    summary.ReportDate >= fromDate.AddDays(-1) &&
                     summary.ReportDate <= toDate)
                 .ToDictionaryAsync(
                     summary => (summary.MachineId, summary.ReportDate));
-
             var allProcessesInReportRange = await _dbContext.PartProcesses
                 .IgnoreQueryFilters()
                 .AsNoTracking()
@@ -781,13 +961,20 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                       process.PlantDate <= toDate)))
                 .Select(process => new
                 {
+                    process.Id,
+                    process.ReferenceId,
                     process.MachineId,
                     process.StartTime,
                     process.EndTime,
-                    process.PlantDate
+                    process.PlantDate,
+                    process.Status
                 })
                 .ToListAsync();
 
+            var continuedProcessIds = allProcessesInReportRange
+                .Where(process => process.ReferenceId.HasValue)
+                .Select(process => process.ReferenceId!.Value)
+                .ToHashSet();
             var activeProcessCounts = new Dictionary<(int MachineId, DateOnly Date), int>();
             foreach (var process in allProcessesInReportRange)
             {
@@ -798,10 +985,16 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 if (!processStartDate.HasValue)
                     continue;
 
-                var processEndDate = process.PlantDate ??
-                    (process.EndTime.HasValue
-                        ? GetLastActiveDate(process.EndTime.Value)
-                        : processStartDate.Value);
+                var hasCutoverContinuation =
+                    continuedProcessIds.Contains(process.Id) &&
+                    (process.Status is ProcessStatus.Paused or
+                        ProcessStatus.PartiallyCompleted);
+                var processEndDate = hasCutoverContinuation
+                    ? processStartDate.Value
+                    : GetReportProcessEndDate(
+                        process.PlantDate,
+                        process.EndTime,
+                        process.Status) ?? processStartDate.Value;
                 var firstDate = processStartDate.Value > fromDate
                     ? processStartDate.Value
                     : fromDate;
@@ -828,10 +1021,19 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 if (!processStartDate.HasValue)
                     continue;
 
-                var processEndDate = process.PlantDate ??
-                    (process.EndTime.HasValue
-                        ? GetLastActiveDate(process.EndTime.Value)
-                        : processStartDate.Value);
+                var hasCutoverContinuation =
+                    hasContinuation &&
+                    (process.Status is ProcessStatus.Paused or
+                        ProcessStatus.PartiallyCompleted);
+                var processEndDate = hasCutoverContinuation
+                    ? processStartDate.Value
+                    : !hasContinuation &&
+                      (process.Status is ProcessStatus.Paused or ProcessStatus.PartiallyCompleted)
+                        ? processStartDate.Value
+                    : GetReportProcessEndDate(
+                        process.PlantDate,
+                        process.EndTime,
+                        process.Status) ?? processStartDate.Value;
                 var firstDate = processStartDate.Value > fromDate
                     ? processStartDate.Value
                     : fromDate;
@@ -845,8 +1047,12 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                     processStartDate.Value != processEndDate;
                 var isCutoverSource =
                     hasContinuation &&
-                    process.EndTime?.TimeOfDay == TimeSpan.Zero;
-
+                    (process.EndTime?.TimeOfDay == TimeSpan.Zero ||
+                     hasCutoverContinuation ||
+                     (process.Status == ProcessStatus.Completed &&
+                      process.PlantDate.HasValue &&
+                      process.EndTime.HasValue &&
+                      GetLastActiveDate(process.EndTime.Value) > process.PlantDate.Value));
                 for (var date = firstDate; date <= lastDate; date = date.AddDays(1))
                 {
                     dailyProcessSummaries.TryGetValue(
@@ -855,6 +1061,9 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                     dailyMachineSummaries.TryGetValue(
                         (process.MachineId, date),
                         out var machineSummary);
+                    dailyMachineSummaries.TryGetValue(
+                        (process.MachineId, date.AddDays(-1)),
+                        out var cutoverSummary);
 
                     var useMachineSummary =
                         processSummary == null &&
@@ -862,41 +1071,85 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                         activeProcessCounts.GetValueOrDefault((process.MachineId, date)) == 1 &&
                         machineSummary != null;
 
-                    var useProcessTimes = !isMultiDay || process.ReferenceId.HasValue;
+                    var isPausedOrPartiallyCompleted =
+                        process.Status is ProcessStatus.Paused or
+                            ProcessStatus.PartiallyCompleted;
+                    var isPausedWithoutContinuation =
+                        isPausedOrPartiallyCompleted && !hasContinuation;
+                    var useProcessTimes =
+                        !isMultiDay ||
+                        process.ReferenceId.HasValue ||
+                        (isPausedOrPartiallyCompleted &&
+                         process.EndTime.HasValue &&
+                         GetLastActiveDate(process.EndTime.Value) == date);
 
-                    var workingTime = isCutoverSource
+                    dailyProcessSummaryTotals.TryGetValue(
+                        (process.MachineId, process.PartProcessId),
+                        out var processSummaryTotal);
+                    var workingTime = isPausedWithoutContinuation
+                        ? GetHigherTimeValue(
+                            process.WorkingTime,
+                            processSummaryTotal?.WorkingTime)
+                        : isCutoverSource
                         ? GetHigherTimeValue(process.WorkingTime, processSummary?.WorkingTime)
                         : processSummary?.WorkingTime ??
                             (useProcessTimes
                                 ? process.WorkingTime
                                 : useMachineSummary ? machineSummary!.WorkingTime : null);
-                    var waitingTime = isCutoverSource
+                    var waitingTime = isPausedWithoutContinuation
+                        ? GetHigherTimeValue(
+                            process.WaitingTime,
+                            processSummaryTotal?.WaitingTime)
+                        : isCutoverSource
                         ? GetHigherTimeValue(process.WaitingTime, processSummary?.WaitingTime)
                         : processSummary?.WaitingTime ??
                             (useProcessTimes
                                 ? process.WaitingTime
                                 : useMachineSummary ? machineSummary!.WaitingTime : null);
-                    var setupTime = isCutoverSource
+                    var setupTime = isPausedWithoutContinuation
+                        ? GetHigherTimeValue(
+                            process.SetupTime,
+                            processSummaryTotal?.SetupTime)
+                        : isCutoverSource
                         ? GetHigherTimeValue(process.SetupTime, processSummary?.SetupTime)
                         : processSummary?.SetupTime ??
                             (useProcessTimes
                                 ? process.SetupTime
                                 : useMachineSummary ? machineSummary!.SetupTime : null);
 
+                    var startTime = process.StartTime.HasValue &&
+                        (DateOnly.FromDateTime(process.StartTime.Value) == date ||
+                         process.PlantDate == date)
+                            ? process.StartTime
+                            : cutoverContinuationIds.Contains(process.PartProcessId) &&
+                                process.PlantDate == date
+                                ? GetCutoverContinuationStartTime(
+                                    date,
+                                    cutoverSummary)
+                                : null;
+
+                    var endTime = isCutoverSource &&
+                        process.EndTime.HasValue &&
+                        process.EndTime.Value.TimeOfDay == TimeSpan.Zero &&
+                        GetLastActiveDate(process.EndTime.Value) == date
+                            ? process.EndTime.Value.AddSeconds(-1)
+                            : process.PlantDate == date
+                                ? process.EndTime
+                                : process.EndTime.HasValue
+                                    ? (isCutoverSource || isPausedOrPartiallyCompleted) &&
+                                      GetLastActiveDate(process.EndTime.Value) == date
+                                        ? process.EndTime.Value.AddSeconds(-1)
+                                        : DateOnly.FromDateTime(process.EndTime.Value) == date
+                                            ? process.EndTime
+                                            : null
+                                    : null;
+
                     dailyRows.Add(CreateDailyReportRow(
                         process,
                         date,
                         isMultiDay,
-                        date == processStartDate.Value &&
-                            !process.ReferenceId.HasValue
-                            ? process.StartTime
-                            : null,
-                        process.EndTime.HasValue &&
-                            !(isMultiDay &&
-                              process.EndTime.Value.TimeOfDay == TimeSpan.Zero) &&
-                            DateOnly.FromDateTime(process.EndTime.Value) == date
-                            ? process.EndTime
-                            : null,
+                        startTime,
+                        endTime,
                         workingTime,
                         waitingTime,
                         setupTime,
@@ -917,6 +1170,40 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
             return endTime.TimeOfDay == TimeSpan.Zero
                 ? endDate.AddDays(-1)
                 : endDate;
+        }
+
+        private static DateOnly? GetReportProcessEndDate(
+            DateOnly? plantDate,
+            DateTime? endTime,
+            ProcessStatus status)
+        {
+            if (endTime.HasValue &&
+                status is ProcessStatus.Paused or ProcessStatus.PartiallyCompleted)
+            {
+                return GetLastActiveDate(endTime.Value);
+            }
+
+            return plantDate ??
+                (endTime.HasValue
+                    ? GetLastActiveDate(endTime.Value)
+                    : null);
+        }
+
+        private static DateTime? GetCutoverContinuationStartTime(
+            DateOnly reportDate,
+            MachineDailyTimeSummary? machineSummary)
+        {
+            if (machineSummary?.WasRunningAtCutover == true)
+                return reportDate.ToDateTime(TimeOnly.MinValue);
+
+            if (machineSummary?.WasRunningAtCutover == false &&
+                machineSummary.FirstRunningAt.HasValue &&
+                DateOnly.FromDateTime(machineSummary.FirstRunningAt.Value) == reportDate)
+            {
+                return machineSummary.FirstRunningAt;
+            }
+
+            return null;
         }
 
         private static double? GetHigherTimeValue(double? processTime, double? dailySummaryTime)
@@ -985,6 +1272,26 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 .SumAsync(pp => pp.ProcessedQuantity);
         }
 
+        public Task<List<PartProcess>> GetInProgressProcessesByMachineIdsAsync(
+            List<int> machineIds,
+            DateOnly plantDate)
+        {
+            return _dbContext.PartProcesses
+                .AsNoTracking()
+                .Where(process =>
+                    machineIds.Contains(process.MachineId) &&
+                    process.PlantDate == plantDate &&
+                    process.Status == ProcessStatus.InProgress &&
+                    process.EndTime == null &&
+                    process.Part != null &&
+                    !process.Part.IsClosed)
+                .Include(process => process.Part!)
+                    .ThenInclude(part => part.Index)
+                .OrderByDescending(process => process.StartTime)
+                .ThenByDescending(process => process.Id)
+                .ToListAsync();
+        }
+
         public async Task<bool> IsCutoverLockedAsync(int processId)
         {
             var process = await _dbContext.PartProcesses
@@ -1042,34 +1349,50 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
             return relatedProcesses;
         }
 
-        public async Task RemoveEquivalent(PartProcess partProcess, int indexId)
+        public async Task RemoveEquivalent(
+            PartProcess partProcess,
+            string partCode,
+            int indexId,
+            DateOnly? effectiveDate = null)
         {
-            var today = VietnamTime.Today;
-            var rootProcessId = partProcess.ReferenceId ?? partProcess.Id;
+            var referenceDate = effectiveDate ?? VietnamTime.Today;
+            var completedDate = partProcess.PlantDate ?? referenceDate;
+            var firstFutureDate = completedDate > referenceDate
+                ? completedDate
+                : referenceDate;
 
-            var todayProcesses = await _dbContext.PartProcesses
+            var equivalentFuturePlans = await _dbContext.PartProcesses
                 .Where(pp =>
                     pp.Id != partProcess.Id &&
-                    pp.PlantDate >= today &&
-                    pp.PartId == partProcess.PartId &&
+                    pp.PlantDate >= firstFutureDate &&
                     pp.MachineId == partProcess.MachineId &&
-                    pp.Sequence == partProcess.Sequence &&
                     pp.Part != null &&
                     !pp.Part.IsClosed &&
+                    pp.Part.Code == partCode &&
                     pp.Part.IndexId == indexId &&
-                    (pp.ReferenceId == rootProcessId || pp.ReferenceId == null))
+                    pp.Status != ProcessStatus.Completed)
                 .ToListAsync();
 
-            var safeDuplicates = todayProcesses
+            var safeDuplicates = equivalentFuturePlans
                 .Where(IsSafeToRemoveUnstartedPlan)
                 .ToList();
 
             _dbContext.PartProcesses.RemoveRange(safeDuplicates);
+            foreach (var duplicate in safeDuplicates)
+            {
+                _logger.LogInformation(
+                    "Đã xóa kế hoạch tương lai chưa bắt đầu vì công đoạn cùng mã part, index và máy đã hoàn thành. " +
+                    "CompletedProcessId={CompletedProcessId}, RemovedProcessId={RemovedProcessId}, " +
+                    "RemovedPlantDate={RemovedPlantDate}",
+                    partProcess.Id,
+                    duplicate.Id,
+                    duplicate.PlantDate);
+            }
 
-            foreach (var unsafeDuplicate in todayProcesses.Except(safeDuplicates))
+            foreach (var unsafeDuplicate in equivalentFuturePlans.Except(safeDuplicates))
             {
                 _logger.LogWarning(
-                    "Không xóa kế hoạch tương ứng khi công đoạn hoàn thành vì bản ghi đã có dữ liệu thực tế. " +
+                    "Không xóa kế hoạch ngày tương lai tương ứng khi công đoạn hoàn thành vì bản ghi đã có dữ liệu thực tế. " +
                     "CompletedProcessId={CompletedProcessId}, PreservedProcessId={PreservedProcessId}",
                     partProcess.Id,
                     unsafeDuplicate.Id);

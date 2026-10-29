@@ -410,7 +410,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                                 UpdateBy = process.UpdateBy,
                                 PlantDate = scheduleDate,
                                 StartTime = process.StartTime,
-                                EndTime = process.EndTime,
+                                EndTime = process.EndTime ?? process.PendingEndTime,
                                 WorkingTime = process.WorkingTime,
                                 Status = process.Status,
                                 Note = process.Note,
@@ -487,7 +487,9 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 yield break;
             }
 
-            if (process.Status == ProcessStatus.Completed ||
+            if (process.Status is ProcessStatus.Completed or
+                ProcessStatus.Paused or
+                ProcessStatus.PartiallyCompleted ||
                 process.Part?.IsClosed == true)
             {
                 if (process.PlantDate.HasValue &&

@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using TAKAHATA.Application.Common.Interface.Repositories;
+using TAKAHATA.Application.Common.Interface.Services;
 using TAKAHATA.Application.Services;
 using TAKAHATA.Domain.Common.Enum;
 using TAKAHATA.Domain.DataLog;
@@ -14,11 +15,46 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
 
         private readonly AppDbContext _dbContext;
         private readonly ILogger<UnitOfWorkRepository> _logger;
+        private readonly IPLCService _plcService;
 
-        public UnitOfWorkRepository(AppDbContext dbContext, ILogger<UnitOfWorkRepository> logger)
+        public UnitOfWorkRepository(
+            AppDbContext dbContext,
+            ILogger<UnitOfWorkRepository> logger,
+            IPLCService plcService)
         {
             _dbContext = dbContext;
             _logger = logger;
+            _plcService = plcService;
+        }
+
+        public Task<bool> HasUnendedInProgressProcessAsync(
+            int machineId,
+            DateOnly reportDate)
+        {
+            return _dbContext.PartProcesses
+                .AnyAsync(process =>
+                    process.MachineId == machineId &&
+                    process.PlantDate == reportDate &&
+                    process.EndTime == null &&
+                    process.Status == ProcessStatus.InProgress &&
+                    process.Part != null &&
+                    !process.Part.IsClosed);
+        }
+
+        public Task<int> FinalizeExpiredProcessStopsAsync(DateTime cutoff)
+        {
+            return _dbContext.PartProcesses
+                .Where(process =>
+                    process.PendingEndTime.HasValue &&
+                    process.EndTime == null &&
+                    process.PendingEndTime <= cutoff)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(
+                        process => process.EndTime,
+                        process => process.PendingEndTime)
+                    .SetProperty(
+                        process => process.PendingEndTime,
+                        (DateTime?)null));
         }
 
         public async Task<DateOnly?> PrepareDailyCutoverAsync(
@@ -29,7 +65,17 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 .FirstOrDefaultAsync(summary =>
                     summary.MachineId == machineId &&
                     summary.PendingFinalPackets > 0);
-            if (pendingSummary != null)
+            if (pendingSummary != null && pendingSummary.ReportDate < previousDate)
+            {
+                ClearPendingCutoverState(pendingSummary);
+                _logger.LogWarning(
+                    "Đã hết hạn trạng thái chờ phản hồi chốt ngày cũ để không chặn lệnh chốt mới. " +
+                    "MachineId={MachineId}, ExpiredReportDate={ExpiredReportDate}, NewReportDate={NewReportDate}",
+                    machineId,
+                    pendingSummary.ReportDate,
+                    previousDate);
+            }
+            else if (pendingSummary != null)
             {
                 _logger.LogWarning(
                     "Bỏ qua lệnh chốt mới cho máy {MachineId}: vẫn đang chờ phản hồi cho ngày {ReportDate}.",
@@ -53,9 +99,20 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 _dbContext.MachineDailyTimeSummaries.Add(previousSummary);
             }
 
+            var machine = await _dbContext.Machines
+                .FirstOrDefaultAsync(candidate => candidate.Id == machineId);
+            if (machine == null)
+            {
+                throw new InvalidOperationException(
+                    $"Không tìm thấy máy Id={machineId} khi chuẩn bị chốt ngày.");
+            }
+
             previousSummary.PendingFinalPackets = 1;
             previousSummary.CutoverCommandSent = false;
             previousSummary.ProcessTimesReset = false;
+            previousSummary.WasRunningAtCutover =
+                machine.MachineStatus == MachineStatus.Running;
+            previousSummary.FirstRunningAt = null;
 
             await _dbContext.SaveChangesAsync();
             return null;
@@ -75,6 +132,8 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
             var summary = await GetDailySummaryAsync(machineId, reportDate);
             summary.PendingFinalPackets = 0;
             summary.CutoverCommandSent = false;
+            summary.WasRunningAtCutover = null;
+            summary.FirstRunningAt = null;
             await _dbContext.SaveChangesAsync();
         }
 
@@ -92,6 +151,8 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
 
             pendingSummary.PendingFinalPackets = 0;
             pendingSummary.CutoverCommandSent = false;
+            pendingSummary.WasRunningAtCutover = null;
+            pendingSummary.FirstRunningAt = null;
 
             await _dbContext.SaveChangesAsync();
 
@@ -125,6 +186,8 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 var isFinalPacket = status == DailyCutoverResponseStatus;
                 Machine? machine = null;
                 var effectiveProcessId = processId;
+                int? continuationPartIdToWrite = null;
+                int? continuationProcessIdToWrite = null;
                 if (statusBitAddress != 0)
                 {
                     machine = await _dbContext.Machines.FirstOrDefaultAsync(
@@ -132,6 +195,21 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
 
                     if (machine != null)
                     {
+                        if (!isFinalPacket &&
+                            (MachineStatus)status == MachineStatus.Running)
+                        {
+                            var cutoverSummary = await _dbContext.MachineDailyTimeSummaries
+                                .FirstOrDefaultAsync(summary =>
+                                    summary.MachineId == machine.Id &&
+                                    summary.ReportDate == VietnamTime.Today.AddDays(-1) &&
+                                    (summary.PendingFinalPackets > 0 ||
+                                     summary.ProcessTimesReset) &&
+                                    summary.WasRunningAtCutover == false &&
+                                    summary.FirstRunningAt == null);
+                            if (cutoverSummary != null)
+                                cutoverSummary.FirstRunningAt = VietnamTime.Now;
+                        }
+
                         if (isFinalPacket)
                         {
                             dailySummary = await _dbContext.MachineDailyTimeSummaries
@@ -163,10 +241,13 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                         }
                         else
                         {
+                            var currentDate = VietnamTime.Today;
+                            var previousDate = currentDate.AddDays(-1);
                             dailySummary = await _dbContext.MachineDailyTimeSummaries
                                 .Where(summary =>
                                     summary.MachineId == machine.Id &&
-                                    summary.PendingFinalPackets > 0)
+                                    summary.PendingFinalPackets > 0 &&
+                                    summary.ReportDate >= previousDate)
                                 .OrderBy(summary => summary.ReportDate)
                                 .FirstOrDefaultAsync();
                             if (dailySummary != null)
@@ -177,6 +258,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                                 effectiveProcessId = await ResolveCurrentProcessIdAsync(
                                     machine.Id,
                                     processId,
+                                    partId != 0 ? partId : machine.PartId,
                                     machine.PartProcessId,
                                     reportDate);
 
@@ -192,29 +274,66 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                             }
                             else
                             {
+                                var stalePendingSummary = await _dbContext.MachineDailyTimeSummaries
+                                    .Where(summary =>
+                                        summary.MachineId == machine.Id &&
+                                        summary.PendingFinalPackets > 0 &&
+                                        summary.ReportDate < previousDate)
+                                    .OrderBy(summary => summary.ReportDate)
+                                    .FirstOrDefaultAsync();
+                                if (stalePendingSummary != null)
+                                {
+                                    ClearPendingCutoverState(stalePendingSummary);
+                                    _logger.LogWarning(
+                                        "Đã hết hạn trạng thái chờ chốt ngày cũ khi xử lý gói PLC hiện tại; " +
+                                        "status=8 đến sau thời điểm này sẽ không được ghép với ngày cũ. " +
+                                        "MachineCode={MachineCode}, ExpiredReportDate={ExpiredReportDate}, CurrentDate={CurrentDate}",
+                                        machine.Code,
+                                        stalePendingSummary.ReportDate,
+                                        currentDate);
+                                }
+
                                 machine.MachineStatus = (MachineStatus)status;
                                 machine.MachineStatusChangeAt = DateTime.Now;
-                                machine.PartId = partId;
-                                var currentDate = VietnamTime.Today;
+                                if (partId != 0)
+                                    machine.PartId = partId;
                                 effectiveProcessId = await ResolveCurrentProcessIdAsync(
                                     machine.Id,
                                     processId,
+                                    partId != 0 ? partId : machine.PartId,
                                     machine.PartProcessId,
                                     currentDate);
                                 if (effectiveProcessId != 0)
                                 {
-                                    var continuationDate = await _dbContext.PartProcesses
+                                    var processDate = await _dbContext.PartProcesses
                                         .Where(partProcess =>
-                                            partProcess.Id == effectiveProcessId &&
-                                            partProcess.ReferenceId.HasValue)
-                                        .Select(partProcess => partProcess.PlantDate)
+                                            partProcess.Id == effectiveProcessId)
+                                        .Select(partProcess => new
+                                        {
+                                            partProcess.PlantDate,
+                                            partProcess.ReferenceId,
+                                            partProcess.EndTime,
+                                            partProcess.PendingEndTime,
+                                            partProcess.Status
+                                        })
                                         .FirstOrDefaultAsync();
 
-                                    if (continuationDate.HasValue)
-                                        reportDate = continuationDate.Value;
+                                    if (processDate?.PlantDate.HasValue == true &&
+                                        (processDate.ReferenceId.HasValue ||
+                                         processDate.PlantDate.Value > currentDate ||
+                                         (processDate.EndTime.HasValue ||
+                                          processDate.PendingEndTime.HasValue) &&
+                                         (processDate.Status is
+                                             ProcessStatus.Paused or
+                                             ProcessStatus.PartiallyCompleted or
+                                             ProcessStatus.Completed)))
+                                    {
+                                        reportDate = processDate.PlantDate.Value;
+                                    }
                                 }
 
-                                machine.PartProcessId = effectiveProcessId;
+                                if (effectiveProcessId != 0)
+                                    machine.PartProcessId = effectiveProcessId;
                             }
                         }
                     }
@@ -222,51 +341,53 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
 
                 if (machine != null && isFinalPacket)
                 {
-                    if (effectiveProcessId != 0)
-                    {
-                        var rootProcessId = await _dbContext.PartProcesses
+                    var rootProcessId = effectiveProcessId == 0
+                        ? 0
+                        : await _dbContext.PartProcesses
                             .Where(partProcess => partProcess.Id == effectiveProcessId)
                             .Select(partProcess => partProcess.ReferenceId ?? partProcess.Id)
                             .FirstOrDefaultAsync();
 
-                        var eligibleProcesses = _dbContext.PartProcesses
-                            .Where(partProcess =>
-                                partProcess.MachineId == machine.Id &&
-                                partProcess.PlantDate <= reportDate &&
-                                partProcess.EndTime == null &&
-                                partProcess.Status == ProcessStatus.InProgress)
-                            .OrderByDescending(partProcess => partProcess.PlantDate)
-                            .ThenByDescending(partProcess => partProcess.Id);
+                    var eligibleProcesses = _dbContext.PartProcesses
+                        .Where(partProcess =>
+                            partProcess.MachineId == machine.Id &&
+                            partProcess.PlantDate == reportDate &&
+                            partProcess.EndTime == null &&
+                            partProcess.Status == ProcessStatus.InProgress &&
+                            partProcess.Part != null &&
+                            !partProcess.Part.IsClosed)
+                        .OrderByDescending(partProcess => partProcess.Id);
 
-                        var activeProcessId = await eligibleProcesses
+                    var activeProcessId = rootProcessId == 0
+                        ? 0
+                        : await eligibleProcesses
                             .Where(partProcess =>
                                 partProcess.Id == rootProcessId ||
                                 partProcess.ReferenceId == rootProcessId)
                             .Select(partProcess => partProcess.Id)
                             .FirstOrDefaultAsync();
 
-                        if (activeProcessId == 0)
-                        {
-                            activeProcessId = await eligibleProcesses
-                                .Select(partProcess => partProcess.Id)
-                                .FirstOrDefaultAsync();
-                        }
+                    if (activeProcessId == 0)
+                    {
+                        activeProcessId = await eligibleProcesses
+                            .Select(partProcess => partProcess.Id)
+                            .FirstOrDefaultAsync();
+                    }
 
-                        if (activeProcessId != 0)
-                        {
-                            effectiveProcessId = activeProcessId;
-                        }
-                        else
-                        {
-                            _logger.LogWarning(
-                                "Không tìm thấy công đoạn đang thực hiện thuộc ngày chốt. " +
-                                "Bỏ qua ghi thời gian công đoạn để tránh lưu sang ngày khác. " +
-                                "MachineId={MachineId}, IncomingProcessId={IncomingProcessId}, ReportDate={ReportDate}",
-                                machine.Id,
-                                processId,
-                                reportDate);
-                            effectiveProcessId = 0;
-                        }
+                    if (activeProcessId != 0)
+                    {
+                        effectiveProcessId = activeProcessId;
+                    }
+                    else
+                    {
+                        _logger.LogWarning(
+                            "Không tìm thấy công đoạn đang thực hiện thuộc ngày chốt. " +
+                            "Bỏ qua ghi thời gian công đoạn để tránh lưu sang ngày khác. " +
+                            "MachineId={MachineId}, IncomingProcessId={IncomingProcessId}, ReportDate={ReportDate}",
+                            machine.Id,
+                            processId,
+                            reportDate);
+                        effectiveProcessId = 0;
                     }
                 }
                 else if (machine == null && isFinalPacket)
@@ -363,6 +484,19 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                         (process.SetupTime ?? 0d) + setupTime,
                         2);
 
+                    if (process.PendingEndTime.HasValue)
+                    {
+                        _logger.LogInformation(
+                            "Đã nhận gói PLC trong thời gian chờ chốt; tiếp tục cộng dồn vào công đoạn. " +
+                            "ProcessId={ProcessId}, PendingEndTime={PendingEndTime}, " +
+                            "WorkingTime={WorkingTime}, WaitingTime={WaitingTime}, SetupTime={SetupTime}",
+                            process.Id,
+                            process.PendingEndTime,
+                            workingTime,
+                            waitingTime,
+                            setupTime);
+                    }
+
                     if (isFinalPacket &&
                         process.Status == ProcessStatus.InProgress &&
                         process.PlantDate <= reportDate &&
@@ -374,6 +508,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                         await _dbContext.SaveChangesAsync();
 
                         process.EndTime = cutoverAt;
+                        process.PendingEndTime = null;
 
                         var rootProcessId = process.ReferenceId ?? process.Id;
                         var continuation = await _dbContext.PartProcesses
@@ -467,6 +602,9 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                         }
 
                         machine!.PartProcessId = continuation.Id;
+                        machine.PartId = process.PartId;
+                        continuationPartIdToWrite = process.PartId;
+                        continuationProcessIdToWrite = continuation.Id;
                         dailySummary.ProcessTimesReset = true;
 
                         _logger.LogInformation(
@@ -483,6 +621,26 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
 
                 await _dbContext.SaveChangesAsync();
                 await transaction.CommitAsync();
+
+                if (machine != null &&
+                    continuationPartIdToWrite.HasValue &&
+                    continuationProcessIdToWrite.HasValue)
+                {
+                    var writeResult = await _plcService.WriteMachineIdentifiers(
+                        machine,
+                        continuationPartIdToWrite.Value,
+                        continuationProcessIdToWrite.Value);
+                    if (!writeResult.IsSuccess)
+                    {
+                        _logger.LogError(
+                            writeResult.Error,
+                            "Đã tạo tiếp nối nhưng không ghi được PartId/ProcessId xuống PLC. " +
+                            "MachineCode={MachineCode}, PartId={PartId}, ProcessId={ProcessId}",
+                            machine.Code,
+                            continuationPartIdToWrite.Value,
+                            continuationProcessIdToWrite.Value);
+                    }
+                }
 
                 _logger.LogInformation(
                     "Cập nhật dữ liệu PLC thành công. " +
@@ -545,14 +703,36 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 $"Không tìm thấy dữ liệu tổng hợp ngày {reportDate} cho máy Id={machineId}.");
         }
 
+        private static void ClearPendingCutoverState(MachineDailyTimeSummary summary)
+        {
+            summary.PendingFinalPackets = 0;
+            summary.CutoverCommandSent = false;
+            summary.WasRunningAtCutover = null;
+            summary.FirstRunningAt = null;
+        }
+
         private async Task<int> ResolveCurrentProcessIdAsync(
             int machineId,
             int processId,
+            int partId,
             int currentMachineProcessId,
             DateOnly currentDate)
         {
             if (processId == 0)
             {
+                var currentPendingStopProcessId = await _dbContext.PartProcesses
+                    .Where(process =>
+                        process.Id == currentMachineProcessId &&
+                        process.MachineId == machineId &&
+                        process.PartId == partId &&
+                        process.PendingEndTime.HasValue &&
+                        process.Part != null &&
+                        !process.Part.IsClosed)
+                    .Select(process => process.Id)
+                    .FirstOrDefaultAsync();
+                if (currentPendingStopProcessId != 0)
+                    return currentPendingStopProcessId;
+
                 var currentProcessId = await _dbContext.PartProcesses
                     .Where(process =>
                         process.Id == currentMachineProcessId &&
@@ -582,43 +762,103 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 .Select(process => process.ReferenceId ?? process.Id)
                 .FirstOrDefaultAsync();
 
-            var machineProcessId = await _dbContext.PartProcesses
-                .Where(process =>
-                    process.Id == currentMachineProcessId &&
-                    process.MachineId == machineId &&
-                    process.PlantDate <= currentDate &&
-                    (process.Id == rootProcessId ||
-                     process.ReferenceId == rootProcessId))
-                .Select(process => process.Id)
-                .FirstOrDefaultAsync();
-            if (machineProcessId != 0)
-                return machineProcessId;
-
-            var incomingProcessId = await _dbContext.PartProcesses
+            var futureProcessId = await _dbContext.PartProcesses
                 .Where(process =>
                     process.Id == processId &&
                     process.MachineId == machineId &&
-                    process.PlantDate <= currentDate &&
+                    process.PlantDate > currentDate &&
                     process.EndTime == null &&
-                    process.Status == ProcessStatus.InProgress)
+                    (process.Status == ProcessStatus.InProgress || process.IsSettingUp) &&
+                    process.Part != null &&
+                    !process.Part.IsClosed)
                 .Select(process => process.Id)
                 .FirstOrDefaultAsync();
-            if (incomingProcessId != 0)
-                return incomingProcessId;
+            if (futureProcessId != 0)
+                return futureProcessId;
+
+            var pendingStopProcessId = await _dbContext.PartProcesses
+                .Where(process =>
+                    process.Id == processId &&
+                    process.MachineId == machineId &&
+                    process.PartId == partId &&
+                    process.PendingEndTime.HasValue &&
+                    process.Part != null &&
+                    !process.Part.IsClosed)
+                .Select(process => process.Id)
+                .FirstOrDefaultAsync();
+            if (pendingStopProcessId != 0)
+            {
+                _logger.LogInformation(
+                    "Nhận gói PLC cuối trong thời gian chờ chốt công đoạn. " +
+                    "MachineId={MachineId}, ProcessId={ProcessId}, PartId={PartId}",
+                    machineId,
+                    pendingStopProcessId,
+                    partId);
+                return pendingStopProcessId;
+            }
+
+            var recentlyEndedProcessId = await _dbContext.PartProcesses
+                .Where(process =>
+                    process.Id == processId &&
+                    process.MachineId == machineId &&
+                    process.PartId == partId &&
+                    process.PlantDate <= currentDate &&
+                    process.EndTime >= VietnamTime.Now.AddMinutes(-5) &&
+                    (process.Status == ProcessStatus.Paused ||
+                     process.Status == ProcessStatus.PartiallyCompleted ||
+                     process.Status == ProcessStatus.Completed) &&
+                    process.Part != null &&
+                    !process.Part.IsClosed)
+                .Select(process => process.Id)
+                .FirstOrDefaultAsync();
+            if (recentlyEndedProcessId != 0)
+            {
+                _logger.LogInformation(
+                    "Nhận gói PLC đến trễ sau khi chốt công đoạn; cộng đúng vào công đoạn theo ID PLC. " +
+                    "MachineId={MachineId}, ProcessId={ProcessId}, PartId={PartId}",
+                    machineId,
+                    recentlyEndedProcessId,
+                    partId);
+                return recentlyEndedProcessId;
+            }
 
             var continuationId = await _dbContext.PartProcesses
                 .Where(process =>
                     process.MachineId == machineId &&
                     process.PlantDate == currentDate &&
                     process.EndTime == null &&
-                    process.Status == ProcessStatus.InProgress &&
+                    (process.Status == ProcessStatus.InProgress || process.IsSettingUp) &&
                     process.ReferenceId == rootProcessId)
                 .OrderByDescending(process => process.Id)
                 .Select(process => process.Id)
                 .FirstOrDefaultAsync();
-
             if (continuationId != 0)
                 return continuationId;
+
+            var incomingProcessId = await _dbContext.PartProcesses
+                .Where(process =>
+                    process.Id == processId &&
+                    process.MachineId == machineId &&
+                    process.PlantDate <= currentDate &&
+                    process.Status == ProcessStatus.InProgress)
+                .Select(process => process.Id)
+                .FirstOrDefaultAsync();
+            if (incomingProcessId != 0)
+                return incomingProcessId;
+
+            var machineProcessId = await _dbContext.PartProcesses
+                .Where(process =>
+                    process.Id == currentMachineProcessId &&
+                    process.MachineId == machineId &&
+                    process.PlantDate <= currentDate &&
+                    process.EndTime == null &&
+                    (process.Status == ProcessStatus.InProgress || process.IsSettingUp) &&
+                    (process.Id == rootProcessId ||
+                     process.ReferenceId == rootProcessId))
+                .Select(process => process.Id)
+                .FirstOrDefaultAsync();
+            if (machineProcessId != 0)
+                return machineProcessId;
 
             var activeProcessId = await _dbContext.PartProcesses
                 .Where(process =>
@@ -635,19 +875,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
             if (activeProcessId != 0)
                 return activeProcessId;
 
-            var incomingProcess = await _dbContext.PartProcesses
-                .Where(process => process.Id == processId)
-                .Select(process => new
-                {
-                    process.PlantDate,
-                    process.EndTime
-                })
-                .FirstOrDefaultAsync();
-            return incomingProcess != null &&
-                incomingProcess.EndTime == null &&
-                incomingProcess.PlantDate <= currentDate
-                ? processId
-                : 0;
+            return 0;
         }
     }
 }

@@ -189,14 +189,8 @@ if (app.Environment.IsDevelopment())
 
 app.UseHangfireDashboard("/hangfire");
 
-RecurringJob.AddOrUpdate<DailyJob>(
-    recurringJobId: "daily-job-at-1am",
-    methodCall: job => job.ExecuteAsync(),
-    cronExpression: "0 1 * * *",
-    options: new RecurringJobOptions
-    {
-        TimeZone = VietnamTime.TimeZone
-    });
+RecurringJob.RemoveIfExists("daily-job-at-1am");
+Log.Information("Đã tạm dừng lịch gia hạn tự động lúc 1:00 trong thời gian kiểm thử.");
 
 RecurringJob.AddOrUpdate<DailyJob>(
     recurringJobId: "daily-machine-time-cutover-at-midnight",
@@ -206,8 +200,6 @@ RecurringJob.AddOrUpdate<DailyJob>(
     {
         TimeZone = VietnamTime.TimeZone
     });
-
-BackgroundJob.Enqueue<DailyJob>(job => job.ExecuteAsync());
 
 app.MapOpenApi();
 app.UseSwagger();

@@ -227,6 +227,46 @@ namespace TAKAHATA.Infrastructure.Services
             }
         }
 
+        public Task<PLCResult<WriteResult>> WriteMachineIdentifiers(
+            Machine machine,
+            int partId,
+            int processId)
+        {
+            _logger.LogInformation(
+                "{Method}: Writing part {PartId} and process {ProcessId} to machine {MachineCode}",
+                nameof(WriteMachineIdentifiers),
+                partId,
+                processId,
+                machine.Code);
+
+            var modbusClient = new ModbusClient(
+                _settingsService.GetIpAddress(),
+                _settingsService.GetPort());
+
+            try
+            {
+                modbusClient.Connect();
+                modbusClient.WriteSingleRegister(machine.PartBitAddress, partId);
+                modbusClient.WriteSingleRegister(machine.PartProcessBitAddress, processId);
+                return Task.FromResult(
+                    PLCResult<WriteResult>.Success(new WriteResult()));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "{Method}: Failed to write part/process identifiers for machine {MachineCode}",
+                    nameof(WriteMachineIdentifiers),
+                    machine.Code);
+                return Task.FromResult(PLCResult<WriteResult>.Fail(ex));
+            }
+            finally
+            {
+                if (modbusClient.Connected)
+                    modbusClient.Disconnect();
+            }
+        }
+
         public async Task<PLCResult<WriteResult>> WriteMachineStatus(Machine machine, int status)
         {
             _logger.LogInformation($"{nameof(WriteMachineStatus)}: Start");
@@ -370,4 +410,3 @@ namespace TAKAHATA.Infrastructure.Services
         }
     }
 }
-

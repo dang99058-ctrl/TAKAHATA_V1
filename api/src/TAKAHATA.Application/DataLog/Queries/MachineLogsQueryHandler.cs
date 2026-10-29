@@ -2,6 +2,7 @@
 using ErrorOr;
 using MapsterMapper;
 using MediatR;
+using TAKAHATA.Application.Services;
 using TAKAHATA.Application.Common.Interface.Repositories;
 using TAKAHATA.Contracts.Equipment;
 using TAKAHATA.Contracts.IndexAndPart;
@@ -10,17 +11,17 @@ namespace TAKAHATA.Application.DataLog.Queries
 {
     public class MachineLogsQueryHandler : IRequestHandler<MachineLogsQuery, ErrorOr<IEnumerable<MachineLogResponse>>>
     {
-        private readonly IPartRepository _partRepository;
         private readonly IMachineRepository _machineRepository;
+        private readonly IPartProcessRepository _partProcessRepository;
         private readonly IMapper _mapper;
 
         public MachineLogsQueryHandler(
-            IPartRepository partRepository,
             IMachineRepository machineRepository,
+            IPartProcessRepository partProcessRepository,
             IMapper mapper)
         {
-            _partRepository = partRepository;
             _machineRepository = machineRepository;
+            _partProcessRepository = partProcessRepository;
             _mapper = mapper;
         }
 
@@ -33,32 +34,36 @@ namespace TAKAHATA.Application.DataLog.Queries
             if (machines == null || machines == null)
                 return [];
 
-            var partIds = machines
-                .ToList()
-                .Select(x => x.PartId)
-                .ToHashSet();
+            var machineList = machines.ToList();
+            var inProgressProcesses = await _partProcessRepository
+                .GetInProgressProcessesByMachineIdsAsync(
+                    machineList.Select(machine => machine.Id).ToList(),
+                    VietnamTime.Today);
+            var processByMachine = inProgressProcesses
+                .GroupBy(process => process.MachineId)
+                .ToDictionary(group => group.Key, group => group.First());
 
-            var parts = await _partRepository.GetByIdsAsync(partIds);
+            var hasPlantMachineIds = await _machineRepository.GetHasPlantMachine(
+                machineList.Select(machine => machine.Id).ToList());
 
-            var partDictionary = parts.ToDictionary(p => p.Id);
-            var machineDictionary = machines.ToDictionary(m => m.Id);
-
-            var hasPlantMachineIds = await _machineRepository.GetHasPlantMachine(machines.Select(m => m.Id).ToList());
-
-            var response = machines.Select(log => new MachineLogResponse
+            var response = machineList.Select(machine =>
             {
-                Id = log.Id,
-                PartId = log.PartId,
-                MachineStatus = log.MachineStatus,
-                MachineStatusChangeAt = log.MachineStatusChangeAt,
-                Name = log.Name,
-                Brand = log.Brand,
-                Code = log.Code,
-                Type = log.Type,
-                Part = partDictionary.TryGetValue(log.PartId, out var part)
-                    ? _mapper.Map<PartResponse>(part)
-                    : null,
-                IDLE = !hasPlantMachineIds.Contains(log.Id),
+                processByMachine.TryGetValue(machine.Id, out var process);
+                return new MachineLogResponse
+                {
+                    Id = machine.Id,
+                    PartId = process?.PartId ?? 0,
+                    MachineStatus = machine.MachineStatus,
+                    MachineStatusChangeAt = machine.MachineStatusChangeAt,
+                    Name = machine.Name,
+                    Brand = machine.Brand,
+                    Code = machine.Code,
+                    Type = machine.Type,
+                    Part = process?.Part == null
+                        ? null
+                        : _mapper.Map<PartResponse>(process.Part),
+                    IDLE = !hasPlantMachineIds.Contains(machine.Id),
+                };
             }).ToList();
 
             return response;

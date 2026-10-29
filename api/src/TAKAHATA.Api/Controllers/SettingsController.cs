@@ -109,6 +109,29 @@ namespace TAKAHATA.Api.Controllers
             });
         }
 
+        [HttpPost("test-daily-extension")]
+        public async Task<IActionResult> TestDailyExtension(
+            TestDailyExtensionRequest request)
+        {
+            if (request.TargetDate == default)
+            {
+                return BadRequest(new ProblemDetails
+                {
+                    Status = StatusCodes.Status400BadRequest,
+                    Title = "Ngày gia hạn không hợp lệ",
+                    Detail = "Vui lòng chọn ngày muốn gia hạn kế hoạch sang."
+                });
+            }
+
+            await _dailyJob.ExecuteAsync(request.TargetDate);
+
+            return Ok(new
+            {
+                request.TargetDate,
+                PreviousDate = request.TargetDate.AddDays(-1)
+            });
+        }
+
         [HttpPost("clear-pending-daily-cutover")]
         public async Task<IActionResult> ClearPendingDailyCutover(
             ClearPendingDailyCutoverRequest request)
@@ -135,5 +158,6 @@ namespace TAKAHATA.Api.Controllers
     }
 
     public sealed record TestDailyCutoverRequest(DateOnly ReportDate, int MachineId);
+    public sealed record TestDailyExtensionRequest(DateOnly TargetDate);
     public sealed record ClearPendingDailyCutoverRequest(int MachineId);
 }

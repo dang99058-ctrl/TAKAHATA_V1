@@ -65,6 +65,8 @@ namespace TAKAHATA.Application.Manufacturing.Commands
                 if (partProcess == null)
                     return Errors.Part.NotFoundProcess;
 
+                partProcess.EndTime = null;
+                partProcess.PendingEndTime = null;
                 if (partProcess.StartTime == null)
                     partProcess.StartTime = DateTime.Now;
 

@@ -2,6 +2,10 @@
 {
     public interface IUnitOfWorkRepository
     {
+        Task<int> FinalizeExpiredProcessStopsAsync(DateTime cutoff);
+        Task<bool> HasUnendedInProgressProcessAsync(
+            int machineId,
+            DateOnly reportDate);
         Task<DateOnly?> PrepareDailyCutoverAsync(
             int machineId,
             DateOnly previousDate);
