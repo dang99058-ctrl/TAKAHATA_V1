@@ -353,7 +353,6 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                             _dbContext.PartProcesses.Add(existingContinuation);
                         }
 
-                        var cutoverAt = today.ToDateTime(TimeOnly.MinValue);
                         var sourceEndTime = partProcess.EndTime;
                         if (partProcess.PendingEndTime.HasValue &&
                             (!sourceEndTime.HasValue ||
@@ -362,11 +361,20 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                             sourceEndTime = partProcess.PendingEndTime;
                         }
 
-                        partProcess.EndTime = sourceEndTime.HasValue &&
-                            sourceEndTime.Value < cutoverAt
-                                ? sourceEndTime
-                                : cutoverAt;
-                        partProcess.PendingEndTime = null;
+                        if (sourceEndTime.HasValue)
+                        {
+                            partProcess.EndTime = sourceEndTime;
+                            partProcess.PendingEndTime = null;
+                        }
+                        else
+                        {
+                            _logger.LogWarning(
+                                "Gia hạn công đoạn đã tạm dừng/một phần nhưng không có thời điểm dừng; " +
+                                "giữ EndTime trống thay vì gán mốc chốt nửa đêm. " +
+                                "ProcessId={ProcessId}, PlantDate={PlantDate}",
+                                partProcess.Id,
+                                partProcess.PlantDate);
+                        }
 
                         var duplicateTodayPlans = await _dbContext.PartProcesses
                             .Where(candidate =>
@@ -1056,6 +1064,9 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 if (firstDate > lastDate)
                     continue;
 
+                var isPausedOrPartiallyCompleted =
+                    process.Status is ProcessStatus.Paused or
+                        ProcessStatus.PartiallyCompleted;
                 var isMultiDay =
                     process.ReferenceId.HasValue ||
                     hasContinuation ||
@@ -1068,6 +1079,8 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                       process.PlantDate.HasValue &&
                       process.EndTime.HasValue &&
                       GetLastActiveDate(process.EndTime.Value) > process.PlantDate.Value));
+                var isMidnightCutoverEndTime =
+                    isCutoverSource && !isPausedOrPartiallyCompleted;
                 for (var date = firstDate; date <= lastDate; date = date.AddDays(1))
                 {
                     dailyProcessSummaries.TryGetValue(
@@ -1086,9 +1099,6 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                         activeProcessCounts.GetValueOrDefault((process.MachineId, date)) == 1 &&
                         machineSummary != null;
 
-                    var isPausedOrPartiallyCompleted =
-                        process.Status is ProcessStatus.Paused or
-                            ProcessStatus.PartiallyCompleted;
                     var isPausedWithoutContinuation =
                         isPausedOrPartiallyCompleted && !hasContinuation;
                     var useProcessTimes =
@@ -1143,7 +1153,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                                     cutoverSummary)
                                 : null;
 
-                    var endTime = isCutoverSource &&
+                    var endTime = isMidnightCutoverEndTime &&
                         process.EndTime.HasValue &&
                         process.EndTime.Value.TimeOfDay == TimeSpan.Zero &&
                         GetLastActiveDate(process.EndTime.Value) == date
@@ -1151,7 +1161,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                             : process.PlantDate == date
                                 ? process.EndTime
                                 : process.EndTime.HasValue
-                                    ? (isCutoverSource || isPausedOrPartiallyCompleted) &&
+                                    ? isMidnightCutoverEndTime &&
                                       GetLastActiveDate(process.EndTime.Value) == date
                                         ? process.EndTime.Value.AddSeconds(-1)
                                         : DateOnly.FromDateTime(process.EndTime.Value) == date
