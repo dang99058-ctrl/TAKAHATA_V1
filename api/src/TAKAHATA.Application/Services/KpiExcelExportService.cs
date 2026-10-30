@@ -195,11 +195,8 @@ namespace TAKAHATA.Application.Services
                     }
 
                     // Tính một lần cho mỗi máy/ngày.
-                    var totalTimeOfDay =
-                        itemsOfDay.FirstOrDefault(x => x.DailyMachineTotalTime.HasValue)
-                            ?.DailyMachineTotalTime ??
-                        itemsOfDay.Sum(x => x.TotalTime) ??
-                        0;
+                    var totalTimeOfDay = itemsOfDay.Sum(
+                        item => GetTotalTime(item) ?? 0);
                     var h = Math.Round(
                         Math.Min(Math.Max(totalTimeOfDay, 0), 24) / 24 * 100,
                         2);
@@ -230,6 +227,7 @@ namespace TAKAHATA.Application.Services
                         worksheet.Cell(row, 5).Value = GetPartTypeLabel(item.PartType);
                         worksheet.Cell(row, 6).Value = item.IndexCode ?? "";
                         worksheet.Cell(row, 7).Value = item.PartCode;
+                        worksheet.Cell(row, 14).Value = item.PerformedBy ?? "";
                         worksheet.Cell(row, 17).Value = item.NewRepair?.ToString() ?? "";
 
                         // H, I: Thời gian bắt đầu và kết thúc.
@@ -247,22 +245,9 @@ namespace TAKAHATA.Application.Services
                             .Style.DateFormat.Format = "hh:mm:ss";
 
                         // J: Tổng thời gian.
-                        if (item.TotalTime.HasValue)
-                        {
-                            worksheet.Cell(row, 10).Value = item.TotalTime.Value;
-                        }
-                        else if (
-                            item.WorkingTime.HasValue ||
-                            item.SetupTime.HasValue ||
-                            item.WaitingTime.HasValue ||
-                            item.ProgrammingTime.HasValue)
-                        {
-                            worksheet.Cell(row, 10).Value =
-                                (item.WorkingTime ?? 0)
-                                + (item.SetupTime ?? 0)
-                                + (item.WaitingTime ?? 0)
-                                + (item.ProgrammingTime ?? 0);
-                        }
+                        var totalTime = GetTotalTime(item);
+                        if (totalTime.HasValue)
+                            worksheet.Cell(row, 10).Value = totalTime.Value;
 
                         // K: Setup; L: Waiting; M: Working.
                         SetNumber(worksheet.Cell(row, 11), item.SetupTime);
@@ -351,6 +336,25 @@ namespace TAKAHATA.Application.Services
                     cell.Value = value.Value;
                 }
             }
+        }
+
+        private static double? GetTotalTime(PartProcessKPIResponse item)
+        {
+            if (item.TotalTime.HasValue)
+                return item.TotalTime.Value;
+
+            if (!item.WorkingTime.HasValue &&
+                !item.SetupTime.HasValue &&
+                !item.WaitingTime.HasValue &&
+                !item.ProgrammingTime.HasValue)
+            {
+                return null;
+            }
+
+            return (item.WorkingTime ?? 0)
+                + (item.SetupTime ?? 0)
+                + (item.WaitingTime ?? 0)
+                + (item.ProgrammingTime ?? 0);
         }
 
         private static void CreateTitle(

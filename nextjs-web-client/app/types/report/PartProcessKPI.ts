@@ -11,6 +11,7 @@ export interface PartProcessKPI {
   partId: number;
   partCode: string;
   partProcessId: number;
+  performedBy?: string | null;
   quantity: number;
   processedQuantity: number;
   reportDate?: string;

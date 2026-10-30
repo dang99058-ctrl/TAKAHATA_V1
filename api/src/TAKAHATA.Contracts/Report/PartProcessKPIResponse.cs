@@ -8,6 +8,7 @@ namespace TAKAHATA.Contracts.Report
         public int MachineId { get; set; }
         public string? MachineName { get; set; }
         public string? MachineCode { get; set; }
+        public string? PerformedBy { get; set; }
         public int IndexId { get; set; }
         public string? IndexCode { get; set; }
         public int PartId { get; set; }

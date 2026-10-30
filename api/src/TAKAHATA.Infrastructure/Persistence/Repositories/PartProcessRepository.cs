@@ -807,6 +807,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
 
                     // PartProcess
                     PartProcessId = pp.Id,
+                    PerformedBy = pp.PerformedBy,
                     ReferenceId = pp.ReferenceId,
                     PlantDate = pp.PlantDate,
                     StartTime = pp.StartTime,
@@ -1294,6 +1295,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 PartId = process.PartId,
                 PartCode = process.PartCode,
                 PartProcessId = process.PartProcessId,
+                PerformedBy = process.PerformedBy,
                 Quantity = process.Quantity,
                 ProcessedQuantity = process.ProcessedQuantity,
                 ReportDate = reportDate,

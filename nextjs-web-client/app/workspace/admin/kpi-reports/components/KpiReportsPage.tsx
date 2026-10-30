@@ -680,6 +680,14 @@ export function KpiReportsPage() {
       align: "center",
     },
     {
+      title: "P.I.C",
+      width: 140,
+      dataIndex: "performedBy",
+      key: "performedBy",
+      align: "center",
+      render: (performedBy?: string | null) => performedBy || "-",
+    },
+    {
       title: "Thời gian",
       children: [
         {

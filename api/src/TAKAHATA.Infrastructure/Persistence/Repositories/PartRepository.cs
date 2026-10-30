@@ -4,6 +4,7 @@ using TAKAHATA.Application.Common.Interface.Repositories;
 using TAKAHATA.Contracts.Common;
 using TAKAHATA.Contracts.Equipment;
 using TAKAHATA.Contracts.IndexAndPart;
+using TAKAHATA.Domain.DataLog;
 using TAKAHATA.Domain.MasterData;
 
 namespace TAKAHATA.Infrastructure.Persistence.Repositories
@@ -74,6 +75,8 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
             if (entity.IsClosed)
                 return null;
 
+            await SynchronizeEditedProcessTimesAsync(entity, cancellationToken);
+
             var result = await base.UpdateAsync(entity, cancellationToken);
             if (result != null)
             {
@@ -90,6 +93,277 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
             }
 
             return result;
+        }
+
+        private async Task SynchronizeEditedProcessTimesAsync(
+            Part part,
+            CancellationToken cancellationToken)
+        {
+            var edits = part.Processes
+                .Where(process => process.Id != 0)
+                .Select(process =>
+                {
+                    var entry = _dbContext.Entry(process);
+                    var originalWorkingTime = entry.Property(item => item.WorkingTime).OriginalValue;
+                    var originalWaitingTime = entry.Property(item => item.WaitingTime).OriginalValue;
+                    var originalSetupTime = entry.Property(item => item.SetupTime).OriginalValue;
+
+                    return new ProcessTimeEdit(
+                        process,
+                        entry.Property(item => item.MachineId).OriginalValue,
+                        entry.Property(item => item.PlantDate).OriginalValue,
+                        originalWorkingTime,
+                        originalWaitingTime,
+                        originalSetupTime,
+                        originalWorkingTime != process.WorkingTime ||
+                        originalWaitingTime != process.WaitingTime ||
+                        originalSetupTime != process.SetupTime);
+                })
+                .Where(edit => edit.HasTimeChanges)
+                .ToList();
+
+            if (edits.Count == 0)
+                return;
+
+            var processIds = edits.Select(edit => edit.Process.Id).Distinct().ToList();
+            var machineIds = edits
+                .SelectMany(edit => new[]
+                {
+                    edit.OriginalMachineId,
+                    edit.Process.MachineId
+                })
+                .Distinct()
+                .ToList();
+            var reportDates = edits
+                .SelectMany(edit => new[]
+                {
+                    edit.OriginalPlantDate,
+                    edit.Process.PlantDate
+                })
+                .Where(date => date.HasValue)
+                .Select(date => date!.Value)
+                .Distinct()
+                .ToList();
+
+            var processSummaries = await _dbContext.PartProcessDailyTimeSummaries
+                .Where(summary =>
+                    processIds.Contains(summary.PartProcessId) ||
+                    machineIds.Contains(summary.MachineId) &&
+                    reportDates.Contains(summary.ReportDate))
+                .ToListAsync(cancellationToken);
+            var machineSummaries = await _dbContext.MachineDailyTimeSummaries
+                .Where(summary =>
+                    machineIds.Contains(summary.MachineId) &&
+                    reportDates.Contains(summary.ReportDate))
+                .ToListAsync(cancellationToken);
+
+            var machineTimeDeltas =
+                new Dictionary<(int MachineId, DateOnly ReportDate), TimeValues>();
+            var targetMachineDates =
+                new HashSet<(int MachineId, DateOnly ReportDate)>();
+
+            foreach (var edit in edits)
+            {
+                var process = edit.Process;
+                var oldKey = edit.OriginalPlantDate.HasValue
+                    ? (edit.OriginalMachineId, edit.OriginalPlantDate.Value)
+                    : ((int MachineId, DateOnly ReportDate)?)null;
+                var newKey = process.PlantDate.HasValue
+                    ? (process.MachineId, process.PlantDate.Value)
+                    : ((int MachineId, DateOnly ReportDate)?)null;
+
+                var oldSummary = oldKey.HasValue
+                    ? processSummaries.FirstOrDefault(summary =>
+                        summary.PartProcessId == process.Id &&
+                        summary.MachineId == oldKey.Value.MachineId &&
+                        summary.ReportDate == oldKey.Value.ReportDate)
+                    : null;
+                var targetSummary = newKey.HasValue
+                    ? processSummaries.FirstOrDefault(summary =>
+                        summary.PartProcessId == process.Id &&
+                        summary.MachineId == newKey.Value.MachineId &&
+                        summary.ReportDate == newKey.Value.ReportDate)
+                    : null;
+
+                var oldValues = oldSummary == null
+                    ? new TimeValues(
+                        edit.OriginalWorkingTime ?? 0,
+                        edit.OriginalWaitingTime ?? 0,
+                        edit.OriginalSetupTime ?? 0)
+                    : new TimeValues(
+                        oldSummary.WorkingTime,
+                        oldSummary.WaitingTime,
+                        oldSummary.SetupTime);
+                var newValues = new TimeValues(
+                    process.WorkingTime ?? 0,
+                    process.WaitingTime ?? 0,
+                    process.SetupTime ?? 0);
+
+                if (oldKey == newKey && newKey.HasValue)
+                {
+                    var targetPreviousValues = targetSummary == null
+                        ? oldValues
+                        : new TimeValues(
+                            targetSummary.WorkingTime,
+                            targetSummary.WaitingTime,
+                            targetSummary.SetupTime);
+                    targetSummary ??= AddProcessSummary(
+                        processSummaries,
+                        process.Id,
+                        newKey.Value.MachineId,
+                        newKey.Value.ReportDate);
+
+                    SetProcessSummaryTimes(targetSummary, newValues);
+                    AddMachineTimeDelta(
+                        machineTimeDeltas,
+                        newKey.Value,
+                        newValues - targetPreviousValues);
+                    targetMachineDates.Add(newKey.Value);
+                    continue;
+                }
+
+                if (oldKey.HasValue)
+                {
+                    if (oldSummary != null)
+                        SetProcessSummaryTimes(oldSummary, TimeValues.Zero);
+
+                    AddMachineTimeDelta(
+                        machineTimeDeltas,
+                        oldKey.Value,
+                        TimeValues.Zero - oldValues);
+                }
+
+                if (newKey.HasValue)
+                {
+                    var targetPreviousValues = targetSummary == null
+                        ? TimeValues.Zero
+                        : new TimeValues(
+                            targetSummary.WorkingTime,
+                            targetSummary.WaitingTime,
+                            targetSummary.SetupTime);
+                    targetSummary ??= AddProcessSummary(
+                        processSummaries,
+                        process.Id,
+                        newKey.Value.MachineId,
+                        newKey.Value.ReportDate);
+                    SetProcessSummaryTimes(targetSummary, newValues);
+                    AddMachineTimeDelta(
+                        machineTimeDeltas,
+                        newKey.Value,
+                        newValues - targetPreviousValues);
+                    targetMachineDates.Add(newKey.Value);
+                }
+            }
+
+            foreach (var (key, delta) in machineTimeDeltas)
+            {
+                var machineSummary = machineSummaries.FirstOrDefault(summary =>
+                    summary.MachineId == key.MachineId &&
+                    summary.ReportDate == key.ReportDate);
+
+                if (machineSummary == null)
+                {
+                    if (!targetMachineDates.Contains(key))
+                        continue;
+
+                    machineSummary = new MachineDailyTimeSummary
+                    {
+                        MachineId = key.MachineId,
+                        ReportDate = key.ReportDate,
+                        WorkingTime = processSummaries
+                            .Where(summary =>
+                                summary.MachineId == key.MachineId &&
+                                summary.ReportDate == key.ReportDate)
+                            .Sum(summary => summary.WorkingTime),
+                        WaitingTime = processSummaries
+                            .Where(summary =>
+                                summary.MachineId == key.MachineId &&
+                                summary.ReportDate == key.ReportDate)
+                            .Sum(summary => summary.WaitingTime),
+                        SetupTime = processSummaries
+                            .Where(summary =>
+                                summary.MachineId == key.MachineId &&
+                                summary.ReportDate == key.ReportDate)
+                            .Sum(summary => summary.SetupTime)
+                    };
+                    _dbContext.MachineDailyTimeSummaries.Add(machineSummary);
+                    machineSummaries.Add(machineSummary);
+                    continue;
+                }
+
+                machineSummary.WorkingTime = Math.Round(
+                    machineSummary.WorkingTime + delta.WorkingTime,
+                    2);
+                machineSummary.WaitingTime = Math.Round(
+                    machineSummary.WaitingTime + delta.WaitingTime,
+                    2);
+                machineSummary.SetupTime = Math.Round(
+                    machineSummary.SetupTime + delta.SetupTime,
+                    2);
+            }
+        }
+
+        private PartProcessDailyTimeSummary AddProcessSummary(
+            List<PartProcessDailyTimeSummary> processSummaries,
+            int processId,
+            int machineId,
+            DateOnly reportDate)
+        {
+            var summary = new PartProcessDailyTimeSummary
+            {
+                PartProcessId = processId,
+                MachineId = machineId,
+                ReportDate = reportDate
+            };
+            _dbContext.PartProcessDailyTimeSummaries.Add(summary);
+            processSummaries.Add(summary);
+            return summary;
+        }
+
+        private static void SetProcessSummaryTimes(
+            PartProcessDailyTimeSummary summary,
+            TimeValues values)
+        {
+            summary.WorkingTime = values.WorkingTime;
+            summary.WaitingTime = values.WaitingTime;
+            summary.SetupTime = values.SetupTime;
+        }
+
+        private static void AddMachineTimeDelta(
+            Dictionary<(int MachineId, DateOnly ReportDate), TimeValues> deltas,
+            (int MachineId, DateOnly ReportDate) key,
+            TimeValues delta)
+        {
+            deltas[key] = deltas.GetValueOrDefault(key, TimeValues.Zero) + delta;
+        }
+
+        private sealed record ProcessTimeEdit(
+            PartProcess Process,
+            int OriginalMachineId,
+            DateOnly? OriginalPlantDate,
+            double? OriginalWorkingTime,
+            double? OriginalWaitingTime,
+            double? OriginalSetupTime,
+            bool HasTimeChanges);
+
+        private readonly record struct TimeValues(
+            double WorkingTime,
+            double WaitingTime,
+            double SetupTime)
+        {
+            public static TimeValues Zero => new(0, 0, 0);
+
+            public static TimeValues operator +(TimeValues left, TimeValues right) =>
+                new(
+                    left.WorkingTime + right.WorkingTime,
+                    left.WaitingTime + right.WaitingTime,
+                    left.SetupTime + right.SetupTime);
+
+            public static TimeValues operator -(TimeValues left, TimeValues right) =>
+                new(
+                    left.WorkingTime - right.WorkingTime,
+                    left.WaitingTime - right.WaitingTime,
+                    left.SetupTime - right.SetupTime);
         }
 
         public async Task<SearchResponse<List<PartResponse>>> SearchAsync(
