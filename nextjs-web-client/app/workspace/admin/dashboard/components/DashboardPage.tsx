@@ -151,6 +151,7 @@ export function DashboardPage() {
           label="Running"
           value={summary.running}
           color="success"
+          textColor={statusConfig[MachineStatus.Running].color}
           active={selectedStatus === MachineStatus.Running}
           onClick={() => setSelectedStatus(MachineStatus.Running)}
         />
@@ -159,6 +160,7 @@ export function DashboardPage() {
           label="Paused"
           value={summary.paused}
           color="warning"
+          textColor={statusConfig[MachineStatus.Paused].color}
           active={selectedStatus === MachineStatus.Paused}
           onClick={() => setSelectedStatus(MachineStatus.Paused)}
         />
@@ -167,6 +169,7 @@ export function DashboardPage() {
           label="Stopped"
           value={summary.stopped}
           color="secondary"
+          textColor={statusConfig[MachineStatus.Stopped].color}
           active={selectedStatus === MachineStatus.Stopped}
           onClick={() => setSelectedStatus(MachineStatus.Stopped)}
         />
@@ -175,6 +178,7 @@ export function DashboardPage() {
           label="Alarm"
           value={summary.alarm}
           color="danger"
+          textColor={statusConfig[MachineStatus.Alarm].color}
           active={selectedStatus === MachineStatus.Alarm}
           onClick={() => setSelectedStatus(MachineStatus.Alarm)}
         />
@@ -191,6 +195,7 @@ export function DashboardPage() {
           label="IDLE"
           value={summary.idle}
           color="secondary"
+          textColor={statusConfig[MachineStatus.Idle].color}
           active={selectedStatus === MachineStatus.Idle}
           onClick={() => setSelectedStatus(MachineStatus.Idle)}
         />
@@ -414,12 +419,14 @@ function SummaryCard({
   label,
   value,
   color = "dark",
+  textColor,
   active = false,
   onClick,
 }: {
   label: string;
   value: number;
   color?: string;
+  textColor?: string;
   active?: boolean;
   onClick: () => void;
 }) {
@@ -441,9 +448,19 @@ function SummaryCard({
         }}
       >
         <div className="card-body text-center w-100">
-          <div className={`text-${color} fw-semibold`}>{label}</div>
+          <div
+            className={textColor ? "fw-semibold" : `text-${color} fw-semibold`}
+            style={textColor ? { color: textColor } : undefined}
+          >
+            {label}
+          </div>
 
-          <h2 className={`text-${color} mb-0`}>{value}</h2>
+          <h2
+            className={textColor ? "mb-0" : `text-${color} mb-0`}
+            style={textColor ? { color: textColor } : undefined}
+          >
+            {value}
+          </h2>
         </div>
       </button>
     </div>
