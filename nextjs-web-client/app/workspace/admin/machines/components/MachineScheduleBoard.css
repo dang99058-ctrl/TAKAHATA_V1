@@ -32,12 +32,12 @@
 
 .timeline-card-in-progress {
   background: #198754;
-  border-color: #ffd591;
+  border-color: #157347;
 }
 
 .timeline-card-in-progress-past {
-  background: #47766b;
-  border-color: #a8c5bd;
+  background: #198754;
+  border-color: #157347;
 }
 
 .timeline-card-cutover-source {
