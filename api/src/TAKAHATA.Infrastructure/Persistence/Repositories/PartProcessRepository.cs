@@ -607,12 +607,10 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
             foreach (var process in data)
             {
                 var rootProcessId = process.ReferenceId ?? process.Id;
-                process.IsCutoverCompleted =
-                    process.EndTime?.TimeOfDay == TimeSpan.Zero &&
-                    continuationRows.Any(continuation =>
-                        (continuation.RootId == rootProcessId ||
-                         continuation.ReferenceId == process.Id) &&
-                        continuation.PlantDate > selectedDate);
+                process.IsCutoverCompleted = continuationRows.Any(continuation =>
+                    (continuation.RootId == rootProcessId ||
+                     continuation.ReferenceId == process.Id) &&
+                    continuation.PlantDate > selectedDate);
             }
 
             var continuationRootIds = data
@@ -929,6 +927,28 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                 .Select(process => process.ReferenceId!.Value)
                 .Distinct()
                 .ToHashSetAsync();
+            var processChainIds = partProcesses
+                .SelectMany(process => new[]
+                {
+                    process.PartProcessId,
+                    process.ReferenceId ?? process.PartProcessId
+                })
+                .Distinct()
+                .ToList();
+            var chainContinuations = await _dbContext.PartProcesses
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(process =>
+                    process.ReferenceId.HasValue &&
+                    processChainIds.Contains(process.ReferenceId.Value))
+                .Select(process => new
+                {
+                    process.Id,
+                    process.MachineId,
+                    process.ReferenceId,
+                    process.PlantDate
+                })
+                .ToListAsync();
             var summaryToDate = partProcesses
                 .Where(process =>
                     !continuationRootIds.Contains(process.PartProcessId) &&
@@ -1033,8 +1053,13 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
             var dailyRows = new List<PartProcessKPIResponse>();
             foreach (var process in partProcesses)
             {
-                var hasContinuation = continuationRootIds.Contains(
-                    process.PartProcessId);
+                var processRootId = process.ReferenceId ?? process.PartProcessId;
+                var hasContinuation = chainContinuations.Any(continuation =>
+                    continuation.Id != process.PartProcessId &&
+                    continuation.MachineId == process.MachineId &&
+                    (continuation.ReferenceId == processRootId ||
+                     continuation.ReferenceId == process.PartProcessId) &&
+                    continuation.PlantDate > process.PlantDate);
                 var isContinuationChain =
                     process.ReferenceId.HasValue || hasContinuation;
                 var processStartDate = process.PlantDate ??
@@ -1079,6 +1104,11 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                       process.PlantDate.HasValue &&
                       process.EndTime.HasValue &&
                       GetLastActiveDate(process.EndTime.Value) > process.PlantDate.Value));
+                var isCompletedAfterPlantDate =
+                    process.Status == ProcessStatus.Completed &&
+                    process.PlantDate.HasValue &&
+                    process.EndTime.HasValue &&
+                    GetLastActiveDate(process.EndTime.Value) > process.PlantDate.Value;
                 var isMidnightCutoverEndTime =
                     isCutoverSource && !isPausedOrPartiallyCompleted;
                 for (var date = firstDate; date <= lastDate; date = date.AddDays(1))
@@ -1115,7 +1145,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                         ? GetHigherTimeValue(
                             process.WorkingTime,
                             processSummaryTotal?.WorkingTime)
-                        : isCutoverSource
+                        : (isCutoverSource || isCompletedAfterPlantDate)
                         ? GetHigherTimeValue(process.WorkingTime, processSummary?.WorkingTime)
                         : processSummary?.WorkingTime ??
                             (useProcessTimes
@@ -1125,7 +1155,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                         ? GetHigherTimeValue(
                             process.WaitingTime,
                             processSummaryTotal?.WaitingTime)
-                        : isCutoverSource
+                        : (isCutoverSource || isCompletedAfterPlantDate)
                         ? GetHigherTimeValue(process.WaitingTime, processSummary?.WaitingTime)
                         : processSummary?.WaitingTime ??
                             (useProcessTimes
@@ -1135,7 +1165,7 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                         ? GetHigherTimeValue(
                             process.SetupTime,
                             processSummaryTotal?.SetupTime)
-                        : isCutoverSource
+                        : (isCutoverSource || isCompletedAfterPlantDate)
                         ? GetHigherTimeValue(process.SetupTime, processSummary?.SetupTime)
                         : processSummary?.SetupTime ??
                             (useProcessTimes

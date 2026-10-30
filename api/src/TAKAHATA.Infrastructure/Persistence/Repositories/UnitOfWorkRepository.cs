@@ -212,10 +212,19 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                         if (!isFinalPacket &&
                             (MachineStatus)status == MachineStatus.Running)
                         {
+                            var activeProcessId = processId != 0
+                                ? processId
+                                : machine.PartProcessId;
+                            var activeProcessPlantDate = await _dbContext.PartProcesses
+                                .Where(process => process.Id == activeProcessId)
+                                .Select(process => process.PlantDate)
+                                .FirstOrDefaultAsync();
+                            var cutoverReportDate = activeProcessPlantDate?.AddDays(-1) ??
+                                VietnamTime.Today.AddDays(-1);
                             var cutoverSummary = await _dbContext.MachineDailyTimeSummaries
                                 .FirstOrDefaultAsync(summary =>
                                     summary.MachineId == machine.Id &&
-                                    summary.ReportDate == VietnamTime.Today.AddDays(-1) &&
+                                    summary.ReportDate == cutoverReportDate &&
                                     (summary.PendingFinalPackets > 0 ||
                                      summary.ProcessTimesReset) &&
                                     summary.WasRunningAtCutover == false &&
