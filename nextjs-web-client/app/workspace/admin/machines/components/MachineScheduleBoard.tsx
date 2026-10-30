@@ -260,7 +260,23 @@ export function MachineScheduleBoard({ active }: Props) {
               const isPastInProgress =
                 process.status === ProcessStatus.InProgress &&
                 dayjs(date).isBefore(dayjs().startOf("day"));
-              const processCardClass = process.isCutoverCompleted
+              const hasLaterContinuation =
+                !isMaintenance &&
+                machine.processes.some(
+                  (candidate) =>
+                    candidate.type === MachineProcessType.Manufacturing &&
+                    candidate.id !== process.id &&
+                    candidate.referenceId != null &&
+                    (candidate.referenceId ===
+                      (process.referenceId ?? process.id) ||
+                      candidate.referenceId === process.id) &&
+                    dayjs(candidate.plantDate).isAfter(
+                      dayjs(process.plantDate),
+                      "day",
+                    ),
+                );
+              const processCardClass =
+                process.isCutoverCompleted || hasLaterContinuation
                 ? "timeline-card-cutover-source"
                 : process.referenceId != null
                   ? "timeline-card-cutover-continuation"

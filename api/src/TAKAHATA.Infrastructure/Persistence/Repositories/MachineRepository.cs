@@ -423,14 +423,11 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                                 EstimatedTime = process.EstimatedTime,
                                 PartType = process.Part?.PartType,
                                 IsOverdue = process.IsOverdue,
-                                IsCutoverCompleted =
-                                    process.EndTime.HasValue &&
-                                    process.EndTime.Value.TimeOfDay == TimeSpan.Zero &&
-                                    continuationRows.Any(continuation =>
-                                        (continuation.RootId ==
-                                             (process.ReferenceId ?? process.Id) ||
-                                         continuation.ReferenceId == process.Id) &&
-                                        continuation.PlantDate > process.PlantDate),
+                                IsCutoverCompleted = continuationRows.Any(continuation =>
+                                    (continuation.RootId ==
+                                         (process.ReferenceId ?? process.Id) ||
+                                     continuation.ReferenceId == process.Id) &&
+                                    continuation.PlantDate > process.PlantDate),
                                 IndexCode = process.Part?.Index?.Code ?? string.Empty,
                                 ReferenceId = process.ReferenceId,
                                 ProcessedQuantity = process.ProcessedQuantity,
