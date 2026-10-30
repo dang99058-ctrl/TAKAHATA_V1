@@ -40,6 +40,7 @@ const FORM_ID = "create-part-form";
 type Props = {
   open: boolean;
   status: ProcessStatus;
+  fixedPlanDate?: Dayjs;
   onClose: () => void;
 };
 
@@ -70,7 +71,12 @@ const createEmptyRow = (): PlanRow => ({
   estimatedTime: null,
 });
 
-export default function CreatePart({ open, status, onClose }: Props) {
+export default function CreatePart({
+  open,
+  status,
+  fixedPlanDate,
+  onClose,
+}: Props) {
   const [form] = Form.useForm<FormValues>();
   const screens = useBreakpoint();
 
@@ -160,7 +166,9 @@ export default function CreatePart({ open, status, onClose }: Props) {
       return false;
     }
 
-    const invalidPlanDateRow = dataSource.findIndex((row) => !row.plantDate);
+    const invalidPlanDateRow = fixedPlanDate
+      ? -1
+      : dataSource.findIndex((row) => !row.plantDate);
     if (invalidPlanDateRow !== -1) {
       toast.warning(
         `Vui lòng chọn ngày kế hoạch tại dòng ${invalidPlanDateRow + 1}.`,
@@ -197,7 +205,10 @@ export default function CreatePart({ open, status, onClose }: Props) {
       partProcesses: dataSource.map((item, index) => ({
         sequence: index + 1,
         machineId: item.machineId,
-        plantDate: item.plantDate?.format("YYYY-MM-DD") ?? null,
+        plantDate:
+          fixedPlanDate?.format("YYYY-MM-DD") ??
+          item.plantDate?.format("YYYY-MM-DD") ??
+          null,
         status: item.status,
         note: item.note?.trim() ?? "",
         estimatedTime: item.estimatedTime ?? 0,
@@ -265,15 +276,18 @@ export default function CreatePart({ open, status, onClose }: Props) {
       dataIndex: "plantDate",
       key: "plantDate",
       width: 170,
-      render: (value: Dayjs | null | undefined, record) => (
-        <DatePicker
-          placeholder="Chọn ngày"
-          value={value}
-          format="DD/MM/YYYY"
-          style={{ width: "100%" }}
-          onChange={(date) => handleChange(record.key, "plantDate", date)}
-        />
-      ),
+      render: (value: Dayjs | null | undefined, record) =>
+        fixedPlanDate ? (
+          <Text>{fixedPlanDate.format("DD/MM/YYYY")}</Text>
+        ) : (
+          <DatePicker
+            placeholder="Chọn ngày"
+            value={value}
+            format="DD/MM/YYYY"
+            style={{ width: "100%" }}
+            onChange={(date) => handleChange(record.key, "plantDate", date)}
+          />
+        ),
     },
     {
       title: "Thời gian dự kiến (giờ)",

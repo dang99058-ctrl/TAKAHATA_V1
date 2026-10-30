@@ -383,30 +383,5 @@ namespace TAKAHATA.Infrastructure.Services
                 }
             }
         }
-
-        public bool TestConnection()
-        {
-            try
-            {
-                var client = new ModbusClient(_settingsService.GetIpAddress(), _settingsService.GetPort());
-
-                client.Connect();
-
-                bool currentValue = client.ReadCoils(10, 1)[0];
-
-                bool newValue = !currentValue;
-
-                client.WriteSingleCoil(10, newValue);
-
-                client.Disconnect();
-
-                return true;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError($"{nameof(TestConnection)}: {ex.Message}");
-                return false;
-            }
-        }
     }
 }

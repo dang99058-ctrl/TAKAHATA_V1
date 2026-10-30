@@ -14,7 +14,6 @@ import {
   Table,
   Tag,
   Typography,
-  DatePicker,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
@@ -72,9 +71,6 @@ export default function WorkerPage() {
 
   // New state
   const [today, setToday] = useState<Dayjs>(() => dayjs().startOf("day"));
-  const [selectedPlantDate, setSelectedPlantDate] = useState<Dayjs>(() =>
-    dayjs().startOf("day"),
-  );
   const [machineKeyword, setMachineKeyword] = useState("");
   const [machines, setMachines] = useState<Machine[]>([]);
   const [selectedMachine, setSelectedMachine] = useState<Machine | null>(null);
@@ -113,7 +109,7 @@ export default function WorkerPage() {
         page,
         pageSize,
         machineId: selectedMachine.id,
-        plantDate: selectedPlantDate.format("YYYY-MM-DD"),
+        plantDate: today.format("YYYY-MM-DD"),
       };
 
       const result = await getPartProcessByMachineAsync(request);
@@ -139,15 +135,12 @@ export default function WorkerPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, selectedMachine, selectedPlantDate]);
+  }, [page, pageSize, selectedMachine, today]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
       const currentDay = dayjs().startOf("day");
       if (!today.isSame(currentDay, "day")) {
-        setSelectedPlantDate((selectedDate) =>
-          selectedDate.isSame(today, "day") ? currentDay : selectedDate,
-        );
         setToday(currentDay);
       }
     }, 60_000);
@@ -671,18 +664,7 @@ export default function WorkerPage() {
                 <div className="d-flex align-items-center gap-2">
                   <span className="section-number">2</span>
                   <span>Danh sách chi tiết cần gia công</span>
-                  <DatePicker
-                    allowClear={false}
-                    value={selectedPlantDate}
-                    format="DD/MM/YYYY"
-                    onChange={(date) => {
-                      if (date) {
-                        setSelectedPlantDate(date.startOf("day"));
-                        setPage(1);
-                        setSelectedProcess(null);
-                      }
-                    }}
-                  />
+                  <Text type="secondary">{today.format("DD/MM/YYYY")}</Text>
                 </div>
 
                 <Button
@@ -1040,6 +1022,7 @@ export default function WorkerPage() {
       <CreatePart
         open={isCreateOpen}
         status={ProcessStatus.PendingApproval}
+        fixedPlanDate={today}
         onClose={() => {
           setIsCreateOpen(false);
           void fetchManufacturingProcess();

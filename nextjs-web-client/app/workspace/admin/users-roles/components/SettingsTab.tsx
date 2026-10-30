@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Button,
   Card,
-  DatePicker,
   Divider,
   Form,
   Input,
@@ -20,18 +19,13 @@ import {
   ReadOutlined,
   SaveOutlined,
   StopOutlined,
-  ThunderboltOutlined,
-  WifiOutlined,
 } from "@ant-design/icons";
 import { toast } from "react-toastify";
-import dayjs, { Dayjs } from "dayjs";
+import dayjs from "dayjs";
 import { ApiError } from "@/app/types/common/ApiError";
 import {
   clearPendingDailyCutoverAsync,
   getSettingsAsync,
-  testConnectionAsync,
-  testDailyCutoverAsync,
-  testDailyExtensionAsync,
   readMachineBitsAsync,
   updateSettingsAsync,
   writeMachineBitsAsync,
@@ -60,15 +54,6 @@ type ReadFormValues = {
   processStatus?: number;
 };
 
-interface TestCutoverFormValues {
-  reportDate: Dayjs;
-  machineId: number;
-}
-
-interface TestExtensionFormValues {
-  targetDate: Dayjs;
-}
-
 interface Props {
   active: boolean;
 }
@@ -88,17 +73,12 @@ export default function SettingsTab({ active }: Props) {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [testingConnection, setTestingConnection] = useState(false);
 
   const [loadingMachines, setLoadingMachines] = useState(false);
   const [machineSource, setMachineSource] = useState<Machine[]>([]);
-  const [testingDailyCutover, setTestingDailyCutover] = useState(false);
-  const [testingDailyExtension, setTestingDailyExtension] = useState(false);
   const [clearingPendingCutover, setClearingPendingCutover] = useState(false);
   const [selectedCutoverMachineId, setSelectedCutoverMachineId] =
     useState<number>();
-  const [cutoverForm] = Form.useForm<TestCutoverFormValues>();
-  const [extensionForm] = Form.useForm<TestExtensionFormValues>();
   const [selectedWriteMachine, setSelectedWriteMachine] =
     useState<Machine | null>(null);
   const [selectedReadMachine, setSelectedReadMachine] =
@@ -177,111 +157,6 @@ export default function SettingsTab({ active }: Props) {
     } finally {
       setSaving(false);
     }
-  };
-
-  const handleTestConnection = async () => {
-    setTestingConnection(true);
-    try {
-      await testConnectionAsync();
-      toast.success("Kết nối thành công.");
-    } catch (error) {
-      console.error("Kết nối thất bại:", error);
-
-      if (error instanceof ApiError) {
-        toast.error(error.getDisplayMessage());
-        return;
-      }
-
-      toast.error("Connect failure.");
-    } finally {
-      setTestingConnection(false);
-    }
-  };
-
-  const handleSubmitDailyCutoverTest = (values: TestCutoverFormValues) => {
-    const reportDate = values.reportDate.format("YYYY-MM-DD");
-    const continuationDate = values.reportDate.add(1, "day").format("DD/MM/YYYY");
-    const selectedMachine = machineSource.find(
-      (machine) => machine.id === values.machineId,
-    );
-
-    Modal.confirm({
-      title: "Xác nhận gửi lệnh chốt ngày",
-      content: (
-        <span>
-          Gửi lệnh chốt ngày {values.reportDate.format("DD/MM/YYYY")} cho máy{" "}
-          <strong>
-            {selectedMachine
-              ? `${selectedMachine.name} - ${selectedMachine.code}`
-              : values.machineId}
-          </strong>
-          . Đây là lệnh thật gửi tới PLC; nếu PLC phản hồi thành công, kế hoạch
-          sẽ được chuyển tiếp sang ngày {continuationDate}.
-        </span>
-      ),
-      okText: "Gửi lệnh",
-      cancelText: "Hủy",
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        setTestingDailyCutover(true);
-        try {
-          await testDailyCutoverAsync(reportDate, values.machineId);
-          toast.success(
-            `Đã xử lý lệnh chốt ngày ${values.reportDate.format("DD/MM/YYYY")} cho máy.`,
-          );
-        } catch (error) {
-          console.error("Gửi lệnh kiểm thử chốt ngày thất bại:", error);
-          if (error instanceof ApiError) {
-            toast.error(error.getDisplayMessage());
-          } else {
-            toast.error("Gửi lệnh kiểm thử chốt ngày thất bại.");
-          }
-        } finally {
-          setTestingDailyCutover(false);
-        }
-      },
-    });
-  };
-
-  const handleSubmitDailyExtensionTest = (
-    values: TestExtensionFormValues,
-  ) => {
-    const targetDate = values.targetDate.format("YYYY-MM-DD");
-    const previousDate = values.targetDate.subtract(1, "day").format("DD/MM/YYYY");
-    const targetDateLabel = values.targetDate.format("DD/MM/YYYY");
-
-    Modal.confirm({
-      title: "Xác nhận chạy thử gia hạn kế hoạch",
-      content: (
-        <span>
-          Chạy logic gia hạn như job 1:00 để chuyển các kế hoạch đủ điều kiện
-          từ ngày trước đó ({previousDate}) sang ngày {targetDateLabel} trên{" "}
-          <strong>tất cả máy</strong>. Thao tác có thể thay đổi dữ liệu kế
-          hoạch.
-        </span>
-      ),
-      okText: "Chạy gia hạn",
-      cancelText: "Hủy",
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        setTestingDailyExtension(true);
-        try {
-          await testDailyExtensionAsync(targetDate);
-          toast.success(
-            `Đã chạy logic gia hạn kế hoạch sang ngày ${targetDateLabel}.`,
-          );
-        } catch (error) {
-          console.error("Chạy thử gia hạn kế hoạch thất bại:", error);
-          if (error instanceof ApiError) {
-            toast.error(error.getDisplayMessage());
-          } else {
-            toast.error("Chạy thử gia hạn kế hoạch thất bại.");
-          }
-        } finally {
-          setTestingDailyExtension(false);
-        }
-      },
-    });
   };
 
   const handleClearPendingCutover = () => {
@@ -531,14 +406,6 @@ export default function SettingsTab({ active }: Props) {
 
             <div className="d-flex justify-content-end align-items-center gap-2 flex-wrap mt-3">
               <Button
-                icon={<WifiOutlined />}
-                loading={testingConnection}
-                onClick={handleTestConnection}
-              >
-                Kiểm tra kết nối
-              </Button>
-
-              <Button
                 type="primary"
                 htmlType="submit"
                 icon={<SaveOutlined />}
@@ -551,160 +418,49 @@ export default function SettingsTab({ active }: Props) {
 
           <div className="mt-4">
             <div className="row g-3 mb-3">
-              <div className="col-12 col-xl-6">
-                <Card
-                  title={
-                    <Space>
-                      <ThunderboltOutlined />
-                      Kiểm thử chốt kế hoạch lúc 0:00
-                    </Space>
-                  }
-                >
+              <div className="col-12">
+                <Card title="Xử lý trạng thái chờ PLC">
                   <Typography.Paragraph type="secondary">
-                    Chọn ngày cần chốt và một máy cụ thể. Lệnh chốt status 8 sẽ
-                    được gửi thật đến PLC nếu máy có công đoạn đang thực hiện
-                    chưa kết thúc trong ngày đã chọn.
+                    Chỉ gỡ trạng thái chờ sau khi đã xác nhận PLC không còn gửi
+                    phản hồi status 8 cũ.
                   </Typography.Paragraph>
-                  <Form<TestCutoverFormValues>
-                    form={cutoverForm}
-                    layout="vertical"
-                    onFinish={handleSubmitDailyCutoverTest}
-                  >
-                    <div className="row">
-                      <div className="col-12 col-md-5">
-                        <Form.Item
-                          label="Ngày cần chốt"
-                          name="reportDate"
-                          rules={[
-                            {
-                              required: true,
-                              message: "Vui lòng chọn ngày cần chốt",
-                            },
-                          ]}
-                        >
-                          <DatePicker
-                            className="w-100"
-                            format="DD/MM/YYYY"
-                            placeholder="Chọn ngày"
-                            disabled={testingDailyCutover}
-                          />
-                        </Form.Item>
-                      </div>
-                      <div className="col-12 col-md-5">
-                        <Form.Item
-                          label="Máy"
-                          name="machineId"
-                          rules={[
-                            { required: true, message: "Vui lòng chọn máy" },
-                          ]}
-                        >
-                          <Select
-                            showSearch={{
-                              filterOption: (input, option) =>
-                                String(option?.label ?? "")
-                                  .toLocaleLowerCase()
-                                  .includes(input.trim().toLocaleLowerCase()),
-                            }}
-                            loading={loadingMachines}
-                            placeholder="Chọn máy"
-                            disabled={testingDailyCutover}
-                            onChange={setSelectedCutoverMachineId}
-                            options={machineSource.map((machine) => ({
-                              value: machine.id,
-                              label: `${machine.name} - ${machine.code}`,
-                            }))}
-                          />
-                        </Form.Item>
-                      </div>
-                      <div className="col-12 col-md-2 d-flex align-items-end">
-                        <Form.Item className="w-100">
-                          <Button
-                            type="primary"
-                            danger
-                            htmlType="submit"
-                            icon={<ThunderboltOutlined />}
-                            loading={testingDailyCutover}
-                            disabled={testingDailyExtension}
-                            block
-                          >
-                            Trigger test
-                          </Button>
-                        </Form.Item>
-                      </div>
+                  <div className="row g-3 align-items-end">
+                    <div className="col-12 col-md-6">
+                      <Typography.Text strong>Máy</Typography.Text>
+                      <Select
+                        allowClear
+                        className="w-100 mt-2"
+                        showSearch={{
+                          filterOption: (input, option) =>
+                            String(option?.label ?? "")
+                              .toLocaleLowerCase()
+                              .includes(input.trim().toLocaleLowerCase()),
+                        }}
+                        loading={loadingMachines}
+                        placeholder="Chọn máy"
+                        value={selectedCutoverMachineId}
+                        disabled={clearingPendingCutover}
+                        onChange={setSelectedCutoverMachineId}
+                        options={machineSource.map((machine) => ({
+                          value: machine.id,
+                          label: `${machine.name} - ${machine.code}`,
+                        }))}
+                      />
                     </div>
-                  </Form>
-                  <Button
-                    danger
-                    icon={<StopOutlined />}
-                    loading={clearingPendingCutover}
-                    disabled={
-                      !selectedCutoverMachineId ||
-                      loadingMachines ||
-                      testingDailyCutover ||
-                      testingDailyExtension
-                    }
-                    onClick={handleClearPendingCutover}
-                  >
-                    Gỡ trạng thái chờ PLC (chỉ khi đã xác nhận không còn phản hồi cũ)
-                  </Button>
-                </Card>
-              </div>
-
-              <div className="col-12 col-xl-6">
-                <Card
-                  title={
-                    <Space>
-                      <ThunderboltOutlined />
-                      Kiểm thử gia hạn kế hoạch lúc 1:00
-                    </Space>
-                  }
-                >
-                  <Typography.Paragraph type="secondary">
-                    Chọn ngày muốn gia hạn sang. Chức năng áp dụng logic của job
-                    1:00 cho tất cả máy; ngày trước đó là ngày nguồn.
-                  </Typography.Paragraph>
-                  <Form<TestExtensionFormValues>
-                    form={extensionForm}
-                    layout="vertical"
-                    onFinish={handleSubmitDailyExtensionTest}
-                  >
-                    <div className="row">
-                      <div className="col-12 col-md-8">
-                        <Form.Item
-                          label="Ngày muốn gia hạn sang"
-                          name="targetDate"
-                          rules={[
-                            {
-                              required: true,
-                              message: "Vui lòng chọn ngày muốn gia hạn sang",
-                            },
-                          ]}
-                        >
-                          <DatePicker
-                            className="w-100"
-                            format="DD/MM/YYYY"
-                            placeholder="Chọn ngày"
-                            disabled={testingDailyExtension}
-                          />
-                        </Form.Item>
-                      </div>
-                      <div className="col-12 col-md-4 d-flex align-items-end">
-                        <Form.Item className="w-100">
-                          <Button
-                            type="primary"
-                            danger
-                            htmlType="submit"
-                            icon={<ThunderboltOutlined />}
-                            loading={testingDailyExtension}
-                            disabled={testingDailyCutover}
-                            block
-                          >
-                            Trigger test
-                          </Button>
-                        </Form.Item>
-                      </div>
+                    <div className="col-12 col-md-6">
+                      <Button
+                        danger
+                        icon={<StopOutlined />}
+                        loading={clearingPendingCutover}
+                        disabled={
+                          !selectedCutoverMachineId || loadingMachines
+                        }
+                        onClick={handleClearPendingCutover}
+                      >
+                        Gỡ trạng thái chờ PLC
+                      </Button>
                     </div>
-                  </Form>
+                  </div>
                 </Card>
               </div>
             </div>

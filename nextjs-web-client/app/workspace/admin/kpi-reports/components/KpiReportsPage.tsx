@@ -160,8 +160,17 @@ type SummaryCard = {
   icon: ReactNode;
 };
 
+type MachinePeriodKPI = MachineKPI & { totalTime: number };
+
 const formatHours = (value?: number | null, fractionDigits = 2) =>
   value == null ? "-" : `${value.toFixed(fractionDigits)} giờ`;
+
+const getMachineTotalTime = (
+  machine: Pick<MachineKPI, "workingTime" | "setupTime" | "waitingTime">,
+) =>
+  (machine.workingTime ?? 0) +
+  (machine.setupTime ?? 0) +
+  (machine.waitingTime ?? 0);
 
 import type { RangePickerProps } from "antd/es/date-picker";
 import { PartTypeLabels } from "@/app/types/part/PartTypeLabels";
@@ -199,6 +208,8 @@ export function KpiReportsPage() {
 
   const [machineDateRange, setMachineDateRange] =
     useState<DateRange>(getCurrentMonthRange);
+  const [loadedMachineDateRange, setLoadedMachineDateRange] =
+    useState<DateRange>(getCurrentMonthRange);
   const [processDateRange, setProcessDateRange] =
     useState<DateRange>(getCurrentMonthRange);
 
@@ -221,55 +232,69 @@ export function KpiReportsPage() {
   const [searchPartOfProcessKeyword, setSearchPartOfProcessKeyword] =
     useState("");
 
-  const chartData = useMemo(() => {
-    const [from, to] = machineDateRange ?? [];
-    const selectedDayCount =
+  const machinePeriodKPIs = useMemo(() => {
+    const [from, to] = loadedMachineDateRange ?? [];
+    const dayCount =
       from && to
         ? to.startOf("day").diff(from.startOf("day"), "day") + 1
         : new Set(machinesKPI.map((machine) => machine.reportDate)).size;
-    const groupedMachines = new Map<
-      string,
-      {
-        code: string;
-        name: string;
-        workingTime: number;
-      }
-    >();
+    const groupedMachines = new Map<string, MachinePeriodKPI>();
 
     for (const machine of machinesKPI) {
       const key = machine.code || machine.name;
       const current = groupedMachines.get(key);
-      if (current) {
-        current.workingTime += machine.workingTime ?? 0;
-      } else {
+
+      if (!current) {
         groupedMachines.set(key, {
-          code: machine.code,
-          name: machine.name,
-          workingTime: machine.workingTime ?? 0,
+          ...machine,
+          totalTime: getMachineTotalTime(machine),
         });
+        continue;
+      }
+
+      current.workingTime =
+        (current.workingTime ?? 0) + (machine.workingTime ?? 0);
+      current.totalTime += getMachineTotalTime(machine);
+      current.maintenanceTime =
+        (current.maintenanceTime ?? 0) + (machine.maintenanceTime ?? 0);
+      current.waitingTime =
+        (current.waitingTime ?? 0) + (machine.waitingTime ?? 0);
+      current.setupTime = (current.setupTime ?? 0) + (machine.setupTime ?? 0);
+      current.lostTime += machine.lostTime;
+
+      if (machine.reportDate > current.reportDate) {
+        current.reportDate = machine.reportDate;
+        current.machineStatus = machine.machineStatus;
       }
     }
 
-    const availableHours = selectedDayCount * WORKING_HOURS_PER_DAY;
+    return Array.from(groupedMachines.values())
+      .map((machine) => ({
+        ...machine,
+        utilizationRate:
+          dayCount > 0
+            ? (machine.totalTime / (dayCount * WORKING_HOURS_PER_DAY)) *
+              100
+            : 0,
+      }))
+      .sort((left, right) => left.code.localeCompare(right.code));
+  }, [loadedMachineDateRange, machinesKPI]);
+
+  const chartData = useMemo(() => {
     const machineColors = getMachineChartColors([
-      ...groupedMachines.keys(),
+      ...machinePeriodKPIs.map((machine) => machine.code || machine.name),
     ]);
 
-    return Array.from(groupedMachines.entries())
-      .map(([key, machine]) => ({
+    return machinePeriodKPIs
+      .map((machine) => ({
         name: machine.code || machine.name || "Máy",
         machineName: machine.name,
-        workingTime: machine.workingTime,
-        utilization:
-          availableHours > 0
-            ? Number(
-                ((machine.workingTime / availableHours) * 100).toFixed(1),
-              )
-            : 0,
-        color: machineColors[key],
+        totalTime: machine.totalTime,
+        utilization: Number(machine.utilizationRate.toFixed(1)),
+        color: machineColors[machine.code || machine.name],
       }))
       .sort((left, right) => left.name.localeCompare(right.name));
-  }, [machineDateRange, machinesKPI]);
+  }, [machinePeriodKPIs]);
 
   const fetchMachinesReport = useCallback(
     async (range: DateRange = machineDateRange) => {
@@ -290,6 +315,7 @@ export function KpiReportsPage() {
         });
 
         setMachinesKPI(data.machineKPIs ?? []);
+        setLoadedMachineDateRange(range);
         setMachinePagination((current) => ({ ...current, current: 1 }));
       } catch (error) {
         console.error("Failed to load machine KPI report:", error);
@@ -432,9 +458,18 @@ export function KpiReportsPage() {
   }, [fetchMachinesReport, fetchPartProcessReport]);
 
   const machineSummary = useMemo(() => {
-    const totalAvailableTime = machinesKPI.length * WORKING_HOURS_PER_DAY;
-    const totalWorkingTime = machinesKPI.reduce(
-      (sum, machine) => sum + (machine.workingTime ?? 0),
+    const [from, to] = loadedMachineDateRange ?? [];
+    const dayCount =
+      from && to
+        ? to.startOf("day").diff(from.startOf("day"), "day") + 1
+        : new Set(machinesKPI.map((machine) => machine.reportDate)).size;
+    const machineCount = new Set(
+      machinesKPI.map((machine) => machine.code || machine.name),
+    ).size;
+    const totalAvailableTime =
+      dayCount * WORKING_HOURS_PER_DAY * machineCount;
+    const totalMachineTime = machinesKPI.reduce(
+      (sum, machine) => sum + getMachineTotalTime(machine),
       0,
     );
     const totalMaintenanceTime = machinesKPI.reduce(
@@ -442,22 +477,24 @@ export function KpiReportsPage() {
       0,
     );
     const totalLostTime = machinesKPI.reduce(
-      (sum, machine) => sum + machine.lostTime,
+      (sum, machine) =>
+        sum +
+        Math.max(WORKING_HOURS_PER_DAY - getMachineTotalTime(machine), 0),
       0,
     );
     const machineUtilization =
       totalAvailableTime > 0
-        ? (totalWorkingTime / totalAvailableTime) * 100
+        ? (totalMachineTime / totalAvailableTime) * 100
         : 0;
 
     return {
       totalAvailableTime,
-      totalWorkingTime,
+      totalMachineTime,
       totalMaintenanceTime,
       totalLostTime,
       machineUtilization,
     };
-  }, [machinesKPI]);
+  }, [loadedMachineDateRange, machinesKPI]);
 
   const summaryCards = useMemo<SummaryCard[]>(
     () => [
@@ -475,7 +512,7 @@ export function KpiReportsPage() {
       },
       {
         title: "Tổng thời gian hoạt động",
-        value: `${machineSummary.totalWorkingTime.toFixed(1)} giờ`,
+        value: `${machineSummary.totalMachineTime.toFixed(1)} giờ`,
         color: "#6366f1",
         icon: <ThunderboltOutlined />,
       },
@@ -495,18 +532,8 @@ export function KpiReportsPage() {
     [machineSummary],
   );
 
-  const machineKPIColumns = useMemo<ColumnsType<MachineKPI>>(
+  const machineKPIColumns = useMemo<ColumnsType<MachinePeriodKPI>>(
     () => [
-      {
-        title: "Ngày",
-        dataIndex: "reportDate",
-        key: "reportDate",
-        width: 120,
-        sorter: (a, b) =>
-          dayjs(a.reportDate).valueOf() - dayjs(b.reportDate).valueOf(),
-        render: (value: string) =>
-          dayjs(value).isValid() ? dayjs(value).format("DD/MM/YYYY") : "-",
-      },
       {
         title: "Máy",
         dataIndex: "name",
@@ -535,29 +562,11 @@ export function KpiReportsPage() {
       },
       {
         title: "Thời gian hoạt động",
-        dataIndex: "workingTime",
-        key: "workingTime",
+        dataIndex: "totalTime",
+        key: "totalTime",
         width: 150,
         align: "right",
-        sorter: (a, b) => (a.workingTime ?? 0) - (b.workingTime ?? 0),
-        render: (value?: number | null) => formatHours(value),
-      },
-      {
-        title: "Thời gian chờ",
-        dataIndex: "waitingTime",
-        key: "waitingTime",
-        width: 140,
-        align: "right",
-        sorter: (a, b) => (a.waitingTime ?? 0) - (b.waitingTime ?? 0),
-        render: (value?: number | null) => formatHours(value),
-      },
-      {
-        title: "Thời gian gá đặt",
-        dataIndex: "setupTime",
-        key: "setupTime",
-        width: 140,
-        align: "right",
-        sorter: (a, b) => (a.setupTime ?? 0) - (b.setupTime ?? 0),
+        sorter: (a, b) => a.totalTime - b.totalTime,
         render: (value?: number | null) => formatHours(value),
       },
       {
@@ -605,20 +614,11 @@ export function KpiReportsPage() {
         },
       },
       {
-        title: "Lost Time (giờ)",
-        dataIndex: "lostTime",
-        key: "lostTime",
-        width: 140,
-        align: "right",
-        sorter: (a, b) => a.lostTime - b.lostTime,
-        render: (value: number) => formatHours(value),
-      },
-      {
-        title: "Hiệu suất ngày",
+        title: "Hiệu suất",
         dataIndex: "utilizationRate",
         key: "utilizationRate",
         fixed: "right",
-        width: 220,
+        width: 120,
         align: "right",
         sorter: (a, b) => a.utilizationRate - b.utilizationRate,
         render: (value: number) => `${value.toFixed(1)}%`,
@@ -870,7 +870,7 @@ export function KpiReportsPage() {
                             (item) => item.name === label,
                           );
                           return machine
-                            ? `${machine.name} - ${machine.machineName} · ${machine.workingTime.toFixed(2)} giờ chạy`
+                            ? `${machine.name} - ${machine.machineName} · ${machine.totalTime.toFixed(2)} giờ hoạt động`
                             : String(label ?? "");
                         }}
                         formatter={(value) => {
@@ -1068,9 +1068,6 @@ export function KpiReportsPage() {
                   <Typography.Title level={5} className="mb-0">
                     KPI hiệu suất máy
                   </Typography.Title>
-                  <Typography.Text type="secondary">
-                    Mỗi dòng là một máy trong một ngày; quỹ thời gian là 24 giờ/ngày
-                  </Typography.Text>
                 </div>
 
                 <Space wrap size={8}>
@@ -1117,10 +1114,10 @@ export function KpiReportsPage() {
               </div>
             }
           >
-            <Table<MachineKPI>
-              rowKey={(record) => `${record.code}-${record.reportDate}`}
+            <Table<MachinePeriodKPI>
+              rowKey={(record) => record.code || record.name}
               columns={machineKPIColumns}
-              dataSource={machinesKPI}
+              dataSource={machinePeriodKPIs}
               loading={loadingMachinesReport}
               size="middle"
               className="dashboard-table"
@@ -1129,12 +1126,12 @@ export function KpiReportsPage() {
               pagination={{
                 current: machinePagination.current,
                 pageSize: machinePagination.pageSize,
-                total: machinesKPI.length,
+                total: machinePeriodKPIs.length,
                 showSizeChanger: true,
                 showQuickJumper: true,
                 pageSizeOptions: [5, 10, 20, 100, 500],
                 showTotal: (total, range) =>
-                  `${range[0]}-${range[1]} / ${total} dòng máy/ngày`,
+                  `${range[0]}-${range[1]} / ${total} máy`,
                 onChange: (current, pageSize) =>
                   setMachinePagination({ current, pageSize }),
               }}

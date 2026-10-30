@@ -13,27 +13,6 @@ export const updateSettingsAsync = async (
   return response.data;
 };
 
-export const testConnectionAsync = async (): Promise<boolean> => {
-  const response = await apiClient.post<boolean>("/Settings/test-connection");
-  return response.data;
-};
-
-export const testDailyCutoverAsync = async (
-  reportDate: string,
-  machineId: number,
-): Promise<void> => {
-  await apiClient.post("/Settings/test-daily-cutover", {
-    reportDate,
-    machineId,
-  });
-};
-
-export const testDailyExtensionAsync = async (
-  targetDate: string,
-): Promise<void> => {
-  await apiClient.post("/Settings/test-daily-extension", { targetDate });
-};
-
 export interface ClearPendingDailyCutoverResponse {
   machineId: number;
   reportDate: string;

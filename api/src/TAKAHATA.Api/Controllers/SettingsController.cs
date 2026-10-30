@@ -3,7 +3,6 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using TAKAHATA.Application.Common.Interface.Repositories;
 using TAKAHATA.Application.Common.Interface.Services;
-using TAKAHATA.Application.Services;
 using TAKAHATA.Application.Settings.Commands;
 using TAKAHATA.Domain.Common.Constant;
 
@@ -13,22 +12,16 @@ namespace TAKAHATA.Api.Controllers
     public class SettingsController : ApiController
     {
         private readonly ISender _sender;
-        private readonly IPLCService _pLCService;
         private readonly IPLCSettingsService _pLCSettingsService;
-        private readonly DailyJob _dailyJob;
         private readonly IUnitOfWorkRepository _unitOfWorkRepository;
 
         public SettingsController(
             ISender sender,
             IPLCSettingsService pLCSettingsService,
-            IPLCService pLCService,
-            DailyJob dailyJob,
             IUnitOfWorkRepository unitOfWorkRepository)
         {
             _sender = sender;
             _pLCSettingsService = pLCSettingsService;
-            _pLCService = pLCService;
-            _dailyJob = dailyJob;
             _unitOfWorkRepository = unitOfWorkRepository;
         }
 
@@ -54,15 +47,6 @@ namespace TAKAHATA.Api.Controllers
             return Ok(response);
         }
 
-        [HttpPost("test-connection")]
-        public async Task<IActionResult> TestConnection()
-        {
-            if (_pLCService.TestConnection())
-                return Ok();
-
-            return Problem();
-        }
-
         [HttpPost("write-machine-bits")]
         public async Task<IActionResult> WriteMachineBits(WriteMachineBitsCommand request)
         {
@@ -81,51 +65,6 @@ namespace TAKAHATA.Api.Controllers
             return result.Match(
                 r => Ok(r),
                 e => Problem(e));
-        }
-
-        [HttpPost("test-daily-cutover")]
-        public async Task<IActionResult> TestDailyCutover(TestDailyCutoverRequest request)
-        {
-            if (request.ReportDate == default || request.MachineId <= 0)
-            {
-                return BadRequest(new ProblemDetails
-                {
-                    Status = StatusCodes.Status400BadRequest,
-                    Title = "Ngày chốt hoặc máy không hợp lệ."
-                });
-            }
-
-            try
-            {
-                await _dailyJob.SendDailyTimeCutoverCommandAsync(
-                    request.ReportDate,
-                    request.MachineId);
-                return Ok();
-            }
-            catch (DailyCutoverPendingException exception)
-            {
-                return Conflict(new ProblemDetails
-                {
-                    Status = StatusCodes.Status409Conflict,
-                    Title = exception.Message
-                });
-            }
-        }
-
-        [HttpPost("test-daily-extension")]
-        public async Task<IActionResult> TestDailyExtension(TestDailyExtensionRequest request)
-        {
-            if (request.TargetDate == default)
-            {
-                return BadRequest(new ProblemDetails
-                {
-                    Status = StatusCodes.Status400BadRequest,
-                    Title = "Ngày gia hạn không hợp lệ."
-                });
-            }
-
-            await _dailyJob.ExecuteAsync(request.TargetDate);
-            return Ok();
         }
 
         [HttpPost("clear-pending-daily-cutover")]
@@ -161,10 +100,6 @@ namespace TAKAHATA.Api.Controllers
         }
 
     }
-
-    public sealed record TestDailyCutoverRequest(DateOnly ReportDate, int MachineId);
-
-    public sealed record TestDailyExtensionRequest(DateOnly TargetDate);
 
     public sealed record ClearPendingDailyCutoverRequest(int MachineId);
 }
