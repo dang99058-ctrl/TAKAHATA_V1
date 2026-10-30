@@ -794,40 +794,13 @@ export function KpiReportsPage() {
       fixed: "right",
       align: "right",
       render: (_, record) => {
-        let totalHours = 0;
         const workingTime = record.workingTime ?? 0;
-
-        if (record.startTime && record.endTime) {
-          const start = dayjs(record.startTime);
-          const end = dayjs(record.endTime);
-
-          if (start.isValid() && end.isValid()) {
-            if (record.reportDate) {
-              const reportDay = dayjs(record.reportDate).startOf("day");
-              const nextDay = reportDay.add(1, "day");
-              const intervalStart = start.isAfter(reportDay)
-                ? start
-                : reportDay;
-              const intervalEnd = end.isBefore(nextDay) ? end : nextDay;
-
-              if (intervalEnd.isAfter(intervalStart)) {
-                totalHours = intervalEnd.diff(intervalStart, "hour", true);
-              }
-            } else if (end.isAfter(start)) {
-              totalHours = end.diff(start, "hour", true);
-            }
-          }
-        }
-
-        if (totalHours === 0) {
-          totalHours =
-            workingTime +
-            (record.setupTime ?? 0) +
-            (record.waitingTime ?? 0);
-        }
-
+        const totalMachineTime =
+          workingTime +
+          (record.setupTime ?? 0) +
+          (record.waitingTime ?? 0);
         const efficiency =
-          totalHours > 0 ? workingTime / totalHours : 0;
+          totalMachineTime > 0 ? workingTime / totalMachineTime : 0;
 
         return `${(efficiency * 100).toFixed(2)}%`;
       },
