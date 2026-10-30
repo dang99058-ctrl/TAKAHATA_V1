@@ -1110,7 +1110,8 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                     process.EndTime.HasValue &&
                     GetLastActiveDate(process.EndTime.Value) > process.PlantDate.Value;
                 var isMidnightCutoverEndTime =
-                    isCutoverSource && !isPausedOrPartiallyCompleted;
+                    hasContinuation &&
+                    process.EndTime?.TimeOfDay == TimeSpan.Zero;
                 for (var date = firstDate; date <= lastDate; date = date.AddDays(1))
                 {
                     dailyProcessSummaries.TryGetValue(

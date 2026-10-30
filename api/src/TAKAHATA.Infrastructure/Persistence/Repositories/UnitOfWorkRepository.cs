@@ -227,10 +227,22 @@ namespace TAKAHATA.Infrastructure.Persistence.Repositories
                                     summary.ReportDate == cutoverReportDate &&
                                     (summary.PendingFinalPackets > 0 ||
                                      summary.ProcessTimesReset) &&
-                                    summary.WasRunningAtCutover == false &&
-                                    summary.FirstRunningAt == null);
-                            if (cutoverSummary != null)
-                                cutoverSummary.FirstRunningAt = VietnamTime.Now;
+                                    summary.WasRunningAtCutover == false);
+                            if (cutoverSummary != null &&
+                                (!cutoverSummary.FirstRunningAt.HasValue ||
+                                 activeProcessPlantDate.HasValue &&
+                                 DateOnly.FromDateTime(cutoverSummary.FirstRunningAt.Value) !=
+                                 activeProcessPlantDate.Value))
+                            {
+                                var runningAt = VietnamTime.Now;
+                                var runningDate =
+                                    activeProcessPlantDate.HasValue &&
+                                    activeProcessPlantDate.Value > VietnamTime.Today
+                                        ? activeProcessPlantDate.Value
+                                        : DateOnly.FromDateTime(runningAt);
+                                cutoverSummary.FirstRunningAt = runningDate.ToDateTime(
+                                    TimeOnly.FromDateTime(runningAt));
+                            }
                         }
 
                         if (isFinalPacket)
